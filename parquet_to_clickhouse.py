@@ -1,27 +1,43 @@
+# parquet_to_clickhouse.py
 import pandas as pd
 import clickhouse_connect
 import os
 
-def map_dtype_to_clickhouse(dtype: str, nullable: bool) -> str:
-    """ Преобразует pandas dtype в ClickHouse тип, включая Nullable """
+def map_dtype_to_clickhouse(dtype: str, nullable: bool, min_val=None, max_val=None) -> str:
+    """ Преобразует pandas dtype в ClickHouse тип, включая Nullable, с учетом диапазона значений """
+    ch_type = "String"  # fallback по умолчанию
+
     if dtype.startswith('int'):
-        ch_type = 'Int64'
+        if min_val is not None and max_val is not None:
+            if 0 <= min_val and max_val <= 255:
+                ch_type = 'UInt8'
+            elif -128 <= min_val <= max_val <= 127:
+                ch_type = 'Int8'
+            elif -32768 <= min_val <= max_val <= 32767:
+                ch_type = 'Int16'
+            elif -2**31 <= min_val <= max_val <= 2**31 - 1:
+                ch_type = 'Int32'
+            else:
+                ch_type = 'Int64'
+        else:
+            ch_type = 'Int64'
+
     elif dtype.startswith('float'):
-        ch_type = 'Float64'
+        ch_type = 'Float32' if max_val is not None and abs(max_val) < 1e38 else 'Float64'
+
     elif dtype == 'bool':
         ch_type = 'UInt8'
+
     elif dtype.startswith('datetime'):
         ch_type = 'DateTime'
-    elif dtype == 'object' or dtype == 'string':
-        ch_type = 'String'
-    elif dtype == 'category':
-        ch_type = 'String'
-    else:
+
+    elif dtype == 'object' or dtype == 'string' or dtype == 'category':
         ch_type = 'String'
 
     return f'Nullable({ch_type})' if nullable else ch_type
 
-# Название новой базы данных
+
+# Название базы данных
 db_name = 'flights_data'
 
 # Подключение к ClickHouse
@@ -43,15 +59,21 @@ for year in range(2018, 2023):
     df = pd.read_parquet(parquet_path)
     table_name = f'{db_name}.flight_{year}'
 
-    # Определяем ClickHouse-тип для каждого столбца с Nullable
+    # Определяем ClickHouse-тип для каждого столбца
     column_definitions = []
     for col in df.columns:
         sanitized_col = col.replace(' ', '_')
-        dtype = str(df[col].dtype)
-        nullable = df[col].isnull().any()
-        ch_type = map_dtype_to_clickhouse(dtype, nullable)
-        column_definitions.append(f"`{sanitized_col}` {ch_type}")
         df.rename(columns={col: sanitized_col}, inplace=True)
+
+        series = df[sanitized_col]
+        dtype = str(series.dtype)
+        nullable = series.isnull().any()
+
+        min_val = series.min(skipna=True) if pd.api.types.is_numeric_dtype(series) else None
+        max_val = series.max(skipna=True) if pd.api.types.is_numeric_dtype(series) else None
+
+        ch_type = map_dtype_to_clickhouse(dtype, nullable, min_val, max_val)
+        column_definitions.append(f"`{sanitized_col}` {ch_type}")
 
     # Удаление таблицы, если она существует
     client.command(f'DROP TABLE IF EXISTS {table_name}')
