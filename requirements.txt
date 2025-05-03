@@ -11,3 +11,6 @@ catboost
 lightgbm
 optuna
 mlflow
+optuna[visualization] 
+kaleido
+wandb
