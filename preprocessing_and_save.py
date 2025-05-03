@@ -43,13 +43,26 @@ def convert_booleans_and_categories(df):
             df[col] = pd.Categorical(df[col]).codes
     return df
 
-def apply_yeo_johnson(df, target_column):
+def apply_yeo_johnson_chunked(df, target_column, chunk_size=10000):
     numeric_cols = df.select_dtypes(include=['number']).columns
-    numeric_cols = [col for col in numeric_cols if col != target_column]  # Exclude target
+    numeric_cols = [col for col in numeric_cols if col != target_column]
 
     transformer = PowerTransformer(method='yeo-johnson')
-    df[numeric_cols] = transformer.fit_transform(df[numeric_cols])
-    return df
+    
+    # Fit on a sample (or full numeric part if small enough)
+    sample = df[numeric_cols].dropna().sample(min(100000, len(df)), random_state=42)
+    transformer.fit(sample)
+
+    # Apply in chunks
+    transformed_chunks = []
+    for start in range(0, len(df), chunk_size):
+        end = start + chunk_size
+        chunk = df.iloc[start:end].copy()
+        chunk[numeric_cols] = transformer.transform(chunk[numeric_cols])
+        transformed_chunks.append(chunk)
+
+    return pd.concat(transformed_chunks, ignore_index=True)
+
 
 def process_datetime_columns(df):
     datetime_cols = df.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]', 'datetime64[s, Etc/UTC]']).columns
@@ -117,7 +130,7 @@ def main():
     df = convert_booleans_and_categories(df)
     df = process_datetime_columns(df)
     print("🧼 Applying Yeo-Johnson transform...")
-    df = apply_yeo_johnson(df, TARGET_COLUMN)
+    df = apply_yeo_johnson_chunked(df, TARGET_COLUMN)
     assert df[TARGET_COLUMN].isin([0, 1]).all(), "Target column contains invalid values after transform!"
 
     print(f"💾 Saving preprocessed data to ClickHouse table: {OUTPUT_TABLE}")
