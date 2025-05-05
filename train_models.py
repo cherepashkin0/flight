@@ -2,227 +2,214 @@ import os
 import uuid
 import json
 import time
-import numpy as np
-import pandas as pd
-import clickhouse_connect
-from tqdm.auto import tqdm
+import yaml
+import random
+import logging
 
-from sklearn.model_selection import train_test_split, cross_val_score
+import clickhouse_connect
+import numpy as np
+from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-from catboost import CatBoostClassifier
-
-import optuna
 import wandb
-from optuna.visualization import plot_optimization_history, plot_param_importances
-
-import random
-
-def generate_readable_name():
-    adjectives = [
-        "brave", "curious", "gentle", "bold", "quiet", "lucky", "fierce",
-        "bright", "silly", "wise", "wild", "calm", "cheerful", "kind"
-    ]
-    nouns = [
-        "lion", "panda", "eagle", "otter", "dolphin", "tiger", "koala",
-        "owl", "fox", "penguin", "bear", "falcon", "shark", "whale"
-    ]
-    return f"{random.choice(adjectives)}-{random.choice(nouns)}-{uuid.uuid4().hex[:4]}"
+from joblib import dump
 
 # -------------------------------
-# Config
+# Logging Setup
 # -------------------------------
-DB_NAME = 'flights_data'
-TABLE_NAME = f'{DB_NAME}.flight_2022_preprocessed'
-TARGET_COLUMN = 'Cancelled'
-OUTPUT_METRICS = 'ml_model_metrics.json'
-WANDB_PROJECT = "Flight_ML_Models"
-WANDB_ENTITY = os.getenv("WANDB_ENTITY", None)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # -------------------------------
-# Output Directory
+# Config Loading
 # -------------------------------
-ARTIFACT_DIR = 'artifacts'
+with open("config.yaml", "r") as f:
+    CONFIG = yaml.safe_load(f)
+
+DB_NAME        = CONFIG["db"]["name"]
+TABLE_NAME     = f"{DB_NAME}.{CONFIG['db']['table']}"
+TARGET_COLUMN  = CONFIG["target_column"]
+WANDB_PROJECT  = CONFIG["wandb"]["project"]
+WANDB_ENTITY   = os.getenv("WANDB_ENTITY", CONFIG["wandb"].get("entity", "")).strip()
+ARTIFACT_DIR   = CONFIG["artifact_dir"]
 os.makedirs(ARTIFACT_DIR, exist_ok=True)
 
+# Sanitize any literal "${...}" in entity
+if WANDB_ENTITY.startswith("${") and WANDB_ENTITY.endswith("}"):
+    WANDB_ENTITY = ""
+
 # -------------------------------
-# ClickHouse Helpers
+# Utility Functions
 # -------------------------------
+def generate_readable_name() -> str:
+    adjectives = ["brave", "curious", "gentle", "bold", "quiet", "lucky", "fierce", "bright"]
+    nouns      = ["lion", "panda", "eagle", "otter", "tiger", "koala", "owl", "fox"]
+    return f"{random.choice(adjectives)}-{random.choice(nouns)}-{uuid.uuid4().hex[:4]}"
+
 def connect_to_clickhouse():
-    return clickhouse_connect.get_client(
-        host=os.getenv('CLICKHOUSE_HOST'),
-        port=os.getenv('CLICKHOUSE_PORT'),
-        username=os.getenv('CLICKHOUSE_USER'),
-        password=os.getenv('CLICKHOUSE_PASSWORD')
+    logger.info("🔌 Connecting to ClickHouse...")
+    client = clickhouse_connect.get_client(
+        host     = os.getenv("CLICKHOUSE_HOST"),
+        port     = os.getenv("CLICKHOUSE_PORT"),
+        username = os.getenv("CLICKHOUSE_USER"),
+        password = os.getenv("CLICKHOUSE_PASSWORD"),
+    )
+    logger.info("✅ ClickHouse connection established.")
+    return client
+
+# -------------------------------
+# True Streaming Trainer
+# -------------------------------
+def train_streaming_sgd(
+    client,
+    table: str,
+    target: str,
+    chunk_size: int = 100_000,
+    max_rows: int = None,
+    test_fraction: float = 0.1,
+):
+    # 1) Sample a held-out test set
+    logger.info("🧪 Sampling held-out test set (~%.0f%%)", test_fraction*100)
+    test_query = (
+        f"SELECT * FROM {table} "
+        f"WHERE {target} IS NOT NULL "
+        f"AND rand()%100 < {int(test_fraction*100)} "
+        f"LIMIT {int(chunk_size)}"
+    )
+    df_test = client.query_df(test_query)
+    # Drop any rows with missing values
+    before = len(df_test)
+    df_test = df_test.dropna()
+    logger.info("ℹ️ Dropped %d/%d rows with NaNs from test set", before - len(df_test), before)
+    if df_test.empty:
+        raise RuntimeError("Test sample was empty after dropping NaNs—adjust test_fraction or inspect your data.")
+    X_test = df_test.drop(columns=[target]).values
+    y_test = df_test[target].astype(int).values
+    # Use fixed binary classes
+    classes = [0, 1]
+
+    # 2) Incremental learner
+    clf = SGDClassifier(
+        loss="log_loss",   # sklearn>=1.0 name for logistic loss
+        max_iter=1,
+        tol=None,
+        random_state=CONFIG["train_test_split"]["random_state"],
+        learning_rate="optimal",
     )
 
-def load_data(client, table):
-    query = f"SELECT * FROM {table} WHERE {TARGET_COLUMN} IS NOT NULL"
-    return client.query_df(query)
+    offset    = 0
+    total     = 0
+    first_fit = True
 
-# -------------------------------
-# Objective Function
-# -------------------------------
-def objective(trial, model_name, X_train, y_train):
-    if model_name == 'xgboost':
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 5, 10),
-            'max_depth': trial.suggest_int('max_depth', 2, 3),
-            'learning_rate': trial.suggest_float('learning_rate', 0.1, 0.2),
-            'use_label_encoder': False,
-            'eval_metric': 'logloss',
-            'random_state': 42
-        }
-        model = XGBClassifier(**params)
-    elif model_name == 'lightgbm':
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 5, 10),
-            'max_depth': trial.suggest_int('max_depth', 2, 3),
-            'learning_rate': trial.suggest_float('learning_rate', 0.1, 0.2),
-            'random_state': 42
-        }
-        model = LGBMClassifier(**params)
-    elif model_name == 'catboost':
-        params = {
-            'iterations': trial.suggest_int('iterations', 5, 10),
-            'depth': trial.suggest_int('depth', 2, 3),
-            'learning_rate': trial.suggest_float('learning_rate', 0.1, 0.2),
-            'verbose': 0,
-            'random_seed': 42
-        }
-        model = CatBoostClassifier(**params)
-    else:
-        raise ValueError("Unknown model")
-
-    auc = cross_val_score(model, X_train, y_train, cv=2, scoring='roc_auc').mean()
-    wandb.log({"optuna_auc": auc})
-    print(f"[{model_name}] Trial {trial.number} AUC: {auc:.4f}")
-    return auc
-
-# -------------------------------
-# Tune and Evaluate
-# -------------------------------
-def tune_model(model_name, X_train, y_train, n_trials=5):
-    study_name = f"{model_name}_study"
-    study_path = os.path.join(ARTIFACT_DIR, f"{study_name}.db")
-    storage = f"sqlite:///{study_path}"
-
-    study = optuna.create_study(
-        direction="maximize",
-        study_name=study_name,
-        storage=storage,
-        load_if_exists=True
-    )
-    study.optimize(lambda trial: objective(trial, model_name, X_train, y_train), n_trials=n_trials)
-
-    print(f"🏆 Best trial for {model_name}: Value = {study.best_value:.4f}, Params = {study.best_params}")
-
-    fig1 = plot_optimization_history(study)
-    fig1_path = os.path.join(ARTIFACT_DIR, f"{model_name}_opt_history.png")
-    fig1.write_image(fig1_path)
-
-    fig2 = plot_param_importances(study)
-    fig2_path = os.path.join(ARTIFACT_DIR, f"{model_name}_param_importance.png")
-    fig2.write_image(fig2_path)
-
-    return study.best_params, [fig1_path, fig2_path]
-
-def train_and_evaluate(model_name, X, y, best_params):
-    if model_name == 'xgboost':
-        model = XGBClassifier(**best_params, random_state=42)
-    elif model_name == 'lightgbm':
-        model = LGBMClassifier(**best_params, random_state=42)
-    elif model_name == 'catboost':
-        model = CatBoostClassifier(**best_params, random_seed=42)
-    else:
-        raise ValueError("Unknown model")
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
-
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
-
-    metrics = {
-        'accuracy': accuracy_score(y_test, y_pred),
-        'f1_score': f1_score(y_test, y_pred),
-        'roc_auc': roc_auc_score(y_test, y_proba),
-        'cross_val_score': float(np.mean(cross_val_score(model, X, y, cv=5)))
+    # Prepare wandb.init kwargs
+    init_kwargs = {
+        "project": WANDB_PROJECT,
+        "name":    f"streaming-sgd-{generate_readable_name()}",
+        "config":  {},
+        "reinit":  True,
     }
+    if WANDB_ENTITY:
+        init_kwargs["entity"] = WANDB_ENTITY
 
+    try:
+        wandb.init(**init_kwargs)
+    except Exception as e:
+        logger.warning("⚠️ W&B init failed: %s", e)
+
+    start_time = time.time()
+
+    # 3) Streaming training loop
+    while True:
+        query = (
+            f"SELECT * FROM {table} "
+            f"WHERE {target} IS NOT NULL "
+            f"AND rand()%100 >= {int(test_fraction*100)} "
+            f"LIMIT {chunk_size} OFFSET {offset}"
+        )
+        df_chunk = client.query_df(query)
+        if df_chunk.empty:
+            logger.info("🛑 No more training data to fetch.")
+            break
+
+        # Drop any rows with NaNs before training
+        before = len(df_chunk)
+        df_chunk = df_chunk.dropna()
+        dropped = before - len(df_chunk)
+        if dropped:
+            logger.debug("ℹ️ Dropped %d/%d rows with NaNs from this chunk", dropped, before)
+        if df_chunk.empty:
+            offset += chunk_size
+            continue
+
+        X_batch = df_chunk.drop(columns=[target]).values
+        y_batch = df_chunk[target].astype(int).values
+
+        if first_fit:
+            clf.partial_fit(X_batch, y_batch, classes=classes)
+            first_fit = False
+        else:
+            clf.partial_fit(X_batch, y_batch)
+
+        offset += chunk_size
+        total  += len(df_chunk)
+        logger.debug("✅ Trained on chunk %d → %d total rows", offset//chunk_size, total)
+
+        if max_rows and total >= max_rows:
+            logger.info("🔒 Reached max_rows=%d", max_rows)
+            break
+
+    # 4) Final evaluation on hold-out
+    y_pred_proba = clf.predict_proba(X_test)[:, 1]
+    y_pred       = clf.predict(X_test)
+    metrics = {
+        "accuracy":           accuracy_score(y_test, y_pred),
+        "f1_score":           f1_score(y_test, y_pred),
+        "roc_auc":            roc_auc_score(y_test, y_pred_proba),
+        "training_time_sec":  round(time.time() - start_time, 2),
+        "n_samples_trained":  total,
+    }
     for k, v in metrics.items():
-        wandb.log({k: v})
+        try:
+            wandb.log({k: v})
+        except Exception:
+            pass
 
-    return model, metrics
+    logger.info("📊 Final metrics: %s", metrics)
+
+    # 5) Save the model
+    model_path = os.path.join(ARTIFACT_DIR, "sgd_streaming_model.pkl")
+    dump(clf, model_path)
+    logger.info("💾 Saved model to %s", model_path)
+    try:
+        wandb.save(model_path)
+    except Exception:
+        pass
+
+    wandb.finish()
+    return clf, metrics
 
 # -------------------------------
-# Main Function
+# Main
 # -------------------------------
 def main():
-    print("🔌 Connecting to ClickHouse...")
     client = connect_to_clickhouse()
 
-    print("📥 Loading preprocessed data...")
-    df = load_data(client, TABLE_NAME)
+    _, metrics = train_streaming_sgd(
+        client,
+        TABLE_NAME,
+        TARGET_COLUMN,
+        chunk_size   = CONFIG.get("stream_chunk_size", 100_000),
+        max_rows     = CONFIG.get("max_rows", None),
+        test_fraction= CONFIG.get("test_fraction", 0.1),
+    )
 
-    y = df[TARGET_COLUMN].astype(int)
-    pre_flight_cols = [
-        'CRSDepTime', 'CRSArrTime', 'Distance',
-        'Year','Quarter','Month','DayOfWeek',
-        'DOT_ID_Marketing_Airline','Flight_Number_Marketing_Airline',
-        'Flight_Number_Operating_Airline',
-        'OriginAirportID','OriginCityMarketID','OriginStateFips','OriginWac',
-        'DestAirportID','DestCityMarketID','DestStateFips',
-        'FlightDate_year','FlightDate_month','FlightDate_day',
-        'FlightDate_weekday','FlightDate_dayofyear'
-    ]
-    X = df[pre_flight_cols]
-
-    results = {}
-
-    print("🏁 Starting model training and evaluation...")
-    for model_name in tqdm(['xgboost', 'lightgbm', 'catboost'], desc="Training models"):
-        print(f"\n⚙️ Tuning {model_name} with Optuna...")
-        start_time = time.time()
-
-        run_name = f"{model_name}_{generate_readable_name()}"
-        wandb.init(
-            project=WANDB_PROJECT,
-            name=run_name,
-            entity=WANDB_ENTITY,
-            config={},
-            reinit=True
-        )
-
-        tune_start = time.time()
-        best_params, image_paths = tune_model(model_name, X, y)
-        tune_duration = round(time.time() - tune_start, 2)
-        wandb.log({"optuna_tuning_time_sec": tune_duration})
-
-        print(f"🎯 Best params for {model_name}: {best_params}")
-        wandb.log(best_params)
-
-        model, metrics = train_and_evaluate(model_name, X, y, best_params)
-
-        elapsed = round(time.time() - start_time, 2)
-        wandb.log({"training_time_sec": elapsed})
-
-        for path in image_paths:
-            wandb.log({os.path.basename(path): wandb.Image(path)})
-
-        wandb.finish()
-
-        results[model_name] = {
-            "best_params": best_params,
-            "metrics": metrics
-        }
-
-    output_path = os.path.join(ARTIFACT_DIR, OUTPUT_METRICS)
-    with open(output_path, 'w') as f:
-        json.dump(results, f, indent=4)
-    print(f"📊 Saved all metrics to {output_path}")
+    out_path = os.path.join(ARTIFACT_DIR, CONFIG["output_metrics"])
+    with open(out_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info("📁 Results saved to %s", out_path)
 
 if __name__ == "__main__":
     main()
