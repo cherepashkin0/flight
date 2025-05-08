@@ -1,72 +1,98 @@
-import polars as pl
 import os
+import polars as pl
+from google.cloud import bigquery
 
-def analyze_parquet_file(file_path, output_path=None):
+def analyze_bigquery_table(
+    table_id: str,
+    project: str = None,
+    output_path: str = None
+):
     """
-    Analyze a single parquet file and save detailed column information to CSV
+    Analyze a BigQuery table and save detailed column information to CSV,
+    processing all columns in a single query.
     
     Args:
-        file_path: Path to the parquet file to analyze
-        output_path: Path where to save the CSV file (defaults to same directory as input)
+        table_id: Full table identifier 'dataset.table' or 'project.dataset.table'
+        project: GCP project ID (if not included in table_id)
+        output_path: Where to save the CSV (defaults to './<table>_analysis.csv')
     """
-    print(f"Analyzing file: {file_path}")
-    
-    # Read the parquet file
-    df = pl.read_parquet(file_path)
-    
-    # Create output path if not provided
     if output_path is None:
-        file_dir = os.path.dirname(file_path)
-        file_name = os.path.basename(file_path).split('.')[0]
-        output_path = os.path.join(file_dir, f"{file_name}_analysis.csv")
+        table_name = table_id.split('.')[-1]
+        output_path = f"{table_name}_analysis.csv"
     
-    # Store results for each column
-    results = []
+    # Initialize client
+    bq_client = bigquery.Client(project=project)
     
-    # Analyze each column
-    for col_name in df.columns:
-        # Get column data type
-        col_type = str(df.schema[col_name])
-        
-        # Calculate statistics
-        min_val = df.select(pl.col(col_name).min()).item()
-        max_val = df.select(pl.col(col_name).max()).item()
-        unique_count = df.select(pl.col(col_name).n_unique()).item()
-        
-        # Get sample of unique non-null values (up to 5)
-        sample_expr = (
-            pl.col(col_name)
-            .filter(pl.col(col_name).is_not_null())
-            .unique()
-            .limit(5)
-        )
-        
-        sample_values = df.select(sample_expr).to_series().to_list()
-        sample_str = str(sample_values)
-        
-        # Add results to table
-        results.append({
-            "Column_Name": col_name,
-            "Data_Type": col_type,
-            "Min_Value": str(min_val),  # Convert to string to handle various types
-            "Max_Value": str(max_val),
-            "Unique_Values_Count": unique_count,
-            "Sample_Values": sample_str
-        })
+    # Get table schema first
+    table = bq_client.get_table(table_id)
+    columns = [field.name for field in table.schema]
+    field_types = {field.name: field.field_type for field in table.schema}
     
-    # Convert results to DataFrame
-    results_df = pl.DataFrame(results)
+    print(f"Analyzing {len(columns)} columns...")
     
-    # Save to CSV
-    results_df.write_csv(output_path)
+    # Generate a query that creates one row per column with all statistics
+    column_stats = []
+    for col_name in columns:
+        col_type = field_types[col_name]
+        
+        if col_type in ['INTEGER', 'FLOAT', 'NUMERIC', 'BIGNUMERIC']:
+            # For numeric columns, include mean and std_dev
+            column_stats.append(f"""
+            SELECT 
+                '{col_name}' AS Column_Name,
+                '{col_type}' AS Data_Type,
+                CAST(MIN({col_name}) AS STRING) AS Min_Value,
+                CAST(MAX({col_name}) AS STRING) AS Max_Value,
+                COUNT(DISTINCT {col_name}) AS Unique_Values_Count,
+                COUNT(*) - COUNT({col_name}) AS Missing_Values_Count,
+                AVG({col_name}) AS Mean_Value,
+                STDDEV({col_name}) AS Std_Dev,
+                (SELECT STRING_AGG(CAST(sample AS STRING), ', ')
+                 FROM (
+                     SELECT DISTINCT {col_name} AS sample
+                     FROM `{table_id}`
+                     WHERE {col_name} IS NOT NULL
+                     LIMIT 5
+                 )) AS Sample_Values
+            FROM `{table_id}`
+            """)
+        else:
+            # For non-numeric columns, use null for mean and std_dev
+            column_stats.append(f"""
+            SELECT 
+                '{col_name}' AS Column_Name,
+                '{col_type}' AS Data_Type,
+                CAST(MIN({col_name}) AS STRING) AS Min_Value,
+                CAST(MAX({col_name}) AS STRING) AS Max_Value,
+                COUNT(DISTINCT {col_name}) AS Unique_Values_Count,
+                COUNT(*) - COUNT({col_name}) AS Missing_Values_Count,
+                CAST(NULL AS FLOAT64) AS Mean_Value,
+                CAST(NULL AS FLOAT64) AS Std_Dev,
+                (SELECT STRING_AGG(CAST(sample AS STRING), ', ')
+                 FROM (
+                     SELECT DISTINCT {col_name} AS sample
+                     FROM `{table_id}`
+                     WHERE {col_name} IS NOT NULL
+                     LIMIT 5
+                 )) AS Sample_Values
+            FROM `{table_id}`
+            """)
+    
+    # Union all the per-column queries
+    full_query = " UNION ALL ".join(column_stats)
+    
+    print("Executing analysis query...")
+    results_df = bq_client.query(full_query).to_dataframe()
+    
+    # Write results to CSV
+    pl_df = pl.DataFrame(results_df)
+    pl_df.write_csv(output_path)
     print(f"Analysis saved to: {output_path}")
 
-def describe2():
-    # Specify the file path - update this to your file path
-    file_path = 'flight_delay/Combined_Flights_2022.parquet'
+if __name__ == "__main__":
+    # Read your project ID from the environment
+    project_id = os.environ["GCP_PROJECT_ID"]
     
-    # Analyze the file and save results to CSV
-    analyze_parquet_file(file_path)
-
-if __name__ == '__main__':
-    describe2()
+    # Compose the full table identifier
+    table_id = f"{project_id}.flights.flights_all"
+    analyze_bigquery_table(table_id, project=project_id)
