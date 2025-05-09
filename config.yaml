@@ -1,0 +1,90 @@
+# Flight cancellation prediction model configuration
+
+# Data configuration
+data:
+  dataset: "flights"
+  table: "flights_all"
+  # limit: 32000000
+  limit: 100000
+  target_column: "Cancelled"
+  date_column: "FlightDate"
+  columns_to_drop_id: "columns_to_drop_id.txt"
+  columns_to_drop_high_correlation: "columns_to_drop_high_correlation.txt"
+  columns_to_drop_leakage: "columns_to_drop_leakage.txt"
+  post_event_columns: [] # Add any columns that are post-event
+
+# Models to train
+models:
+  - "xgboost"
+  - "lightgbm"
+  - "catboost"
+
+# Preprocessing settings
+preprocessing:
+  impute_missing: false
+
+# Hyperparameter optimization settings
+optimization:
+  n_trials: 10
+  cv_folds: 3
+  beta: 0.25
+
+# MLflow settings
+mlflow:
+  tracking_uri: "./mlruns"
+  experiment_name: "Flight_Cancellation_Prediction"
+
+# Hyperparameter search ranges for each model
+hyperparameters:
+  xgboost:
+    # only these three get min/max for Optuna
+    optimize:
+      max_depth:
+        min: 3
+        max: 10
+      learning_rate:
+        min: 0.01
+        max: 0.3
+      n_estimators:
+        min: 50
+        max: 500
+    # all other params stay fixed
+    fixed:
+      min_child_weight: 1
+      gamma: 0.0
+      subsample: 1.0
+      colsample_bytree: 1.0
+
+  lightgbm:
+    optimize:
+      num_leaves:
+        min: 20
+        max: 150
+      learning_rate:
+        min: 0.01
+        max: 0.3
+      n_estimators:
+        min: 50
+        max: 500
+    fixed:
+      min_child_samples: 20
+      subsample: 1.0
+      colsample_bytree: 1.0
+      reg_alpha: 0.1
+      reg_lambda: 0.1
+
+  catboost:
+    optimize:
+      depth:
+        min: 4
+        max: 10
+      learning_rate:
+        min: 0.01
+        max: 0.3
+      iterations:
+        min: 50
+        max: 500
+    fixed:
+      l2_leaf_reg: 3.0
+      bagging_temperature: 1.0
+      random_strength: 1.0
