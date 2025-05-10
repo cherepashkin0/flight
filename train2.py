@@ -54,7 +54,10 @@ import mlflow
 import mlflow.sklearn
 
 from memory_profiler import profile
+from optuna.integration import LightGBMPruningCallback, XGBoostPruningCallback
+from datetime import datetime, timezone
 
+run_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 # === CONFIGURATION ===
 SEED = 42
@@ -139,7 +142,9 @@ class DataLoader:
         """
         
         client = bigquery.Client(project=self.project_id)
-        df = client.query(query).to_dataframe()
+        df = client.query(query).to_dataframe(create_bqstorage_client=True,
+                                              dtype_backend="pyarrow"  # avoids object columns
+                                             ).convert_dtypes()
         print(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns.")
         
         # Convert target to int
@@ -465,26 +470,38 @@ class HyperparameterOptimizer:
         )     
         
         return np.mean(cv_results['test_score'])
-    
-    def optimize(self):
-        """Run the hyperparameter optimization study."""
-        # Set up storage
-        storage = optuna.storages.RDBStorage(
-            url="sqlite:///optuna_study.db"
-        )
+
         
-        # Create and run study
+
+    def optimize(self):
+        """Run the hyperparameter‑optimization study for *this* script run."""
+        # ---- 1.  Build a unique study name ----
+        # Option A (timestamp).  Example: "xgboost_opt_20250510T091423Z"
+        run_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Option B (short uuid).  Example: "xgboost_opt_ab12"
+        # run_tag = uuid.uuid4().hex[:4]
+
+        study_name = f"{self.model_type}_opt_{run_tag}"
+
+        # ---- 2.  Connect to the same SQLite storage ----
+        storage = optuna.storages.RDBStorage(
+            url="sqlite:///optuna_study.db",
+            engine_kwargs={"connect_args": {"check_same_thread": False}},
+        )
+
+        # ---- 3.  ALWAYS create a new study (load_if_exists=False) ----
         study = optuna.create_study(
-            study_name=f"{self.model_type}_optimization",
-            direction='maximize',
+            study_name=study_name,
+            direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=SEED),
             storage=storage,
-            load_if_exists=True
+            load_if_exists=False,          # <‑‑ force a fresh study
         )
-        
-        study.optimize(self._objective, n_trials=self.config['optimization']['n_trials'])
-        
-        # Retrieve and merge best parameters with fixed
+
+        # ---- 4.  Run exactly n_trials for *this* study ----
+        study.optimize(self._objective, n_trials=self.config["optimization"]["n_trials"])
+
+        # ---- 5.  Retrieve the best params as before ----
         best_search_params = study.best_params
         best_params = {**best_search_params, **self.fixed_params}
         
@@ -562,7 +579,7 @@ class ModelTrainer:
                 # Train model
                 print(f"Training {self.model_type}...")
                 start = time.time()
-                pipeline.fit(self.X_train, self.y_train)
+                pipeline.fit(self.X_train, self.y_train, callbacks=[LightGBMPruningCallback(trial, "binary_logloss"))
                 duration = time.time() - start
                 print(f"Done in {duration:.2f}s")
                 
