@@ -36,7 +36,9 @@ import matplotlib.pyplot as plt
 # ML tools
 from sklearn.model_selection import train_test_split, cross_validate
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer
+# from sklearn.preprocessing import FunctionTransformer
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     roc_auc_score, precision_score, recall_score, accuracy_score,
@@ -56,8 +58,6 @@ import mlflow.sklearn
 # from memory_profiler import profile
 from optuna.integration import LightGBMPruningCallback, XGBoostPruningCallback
 from datetime import datetime, timezone
-
-run_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 # === CONFIGURATION ===
 SEED = 42
@@ -183,7 +183,6 @@ def drop_categoricals_to_numpy(X: pd.DataFrame) -> np.ndarray:
 # === MODEL BUILDING ===
 class ModelFactory:
     """Factory for creating different types of boosting models."""
-    
     @staticmethod
     def create_model(model_type, params=None):
         """Create a model of the specified type with given parameters."""
@@ -214,8 +213,8 @@ class ModelFactory:
             
         elif model_type == 'catboost':
             default_params = {
-                'loss_function': 'Logloss',
-                'eval_metric': 'Recall',
+                'loss_function': 'Logloss',  # Keep using 'Logloss'
+                'eval_metric': 'Recall',     # Keep using 'Recall'
                 'thread_count': 4,
                 'random_seed': SEED,
                 'verbose': False
@@ -225,7 +224,7 @@ class ModelFactory:
             return ctb.CatBoostClassifier(**default_params)
             
         else:
-            raise ValueError(f"Unknown model type: {model_type}")
+            raise ValueError(f"Unknown model type: {model_type}")    
     
     @staticmethod
     def apply_class_balancing(model, model_type, class_ratio):
@@ -238,18 +237,35 @@ class ModelFactory:
             model.set_params(auto_class_weights='Balanced')
         return model
 
+def build_pipeline(model_type, params=None, impute_missing=False, numeric_cols=None, categorical_cols=None):
+    # must be given lists of numeric and categorical cols
+    if numeric_cols is None or categorical_cols is None:
+        raise ValueError("build_pipeline requires both numeric_cols and categorical_cols")
 
-def build_pipeline(model_type, params=None, impute_missing=False):
-    """Build a pipeline with the specified model and parameters."""
-    steps = [('drop_cat', FunctionTransformer(drop_categoricals_to_numpy, validate=False))]
-    
+
+    # 2) build sub-pipelines
+    numeric_steps = []
     if impute_missing:
-        steps.append(('impute', SimpleImputer(strategy='mean')))
-    
+        numeric_steps.append(('impute', SimpleImputer(strategy='mean')))
+    numeric_steps.append(('scale', StandardScaler()))
+
+    categorical_steps = [
+        ('impute', SimpleImputer(strategy='most_frequent')),  # if you want to fill missing
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ]
+
+    preprocessor = ColumnTransformer([
+        ('num', Pipeline(numeric_steps), numeric_cols),
+        ('cat', Pipeline(categorical_steps), categorical_cols),
+    ])
+
+    # 3) put preprocessor + model into one big pipeline
     model = ModelFactory.create_model(model_type, params)
-    steps.append(('model', model))
-    
-    return Pipeline(steps)
+    return Pipeline([
+        ('preprocessor', preprocessor),
+        ('model', model)
+    ])
+
 
 
 # === MODEL EVALUATION ===
@@ -357,13 +373,14 @@ class FeatureImportancePlotter:
         else:
             return None
 
-
 # === HYPERPARAMETER OPTIMIZATION ===
 class HyperparameterOptimizer:
     """Handles hyperparameter optimization using Optuna."""
     
     def __init__(self, X_train, y_train, model_type, config):
         self.X_train = X_train
+        self.numeric_cols = X_train.select_dtypes(include=['int64','float64']).columns.tolist()
+        self.categorical_cols = X_train.select_dtypes(exclude=['int64','float64']).columns.tolist()
         self.y_train = y_train
         self.model_type = model_type
         self.config = config
@@ -451,9 +468,11 @@ class HyperparameterOptimizer:
         
         # Build pipeline
         pipeline = build_pipeline(
-            self.model_type, 
-            trial_params, 
-            self.config['preprocessing']['impute_missing']
+            self.model_type,
+            trial_params,
+            self.config['preprocessing']['impute_missing'],
+            numeric_cols=self.numeric_cols,
+            categorical_cols=self.categorical_cols
         )
         
         # Apply class balancing
@@ -484,12 +503,13 @@ class HyperparameterOptimizer:
     def optimize(self):
         """Run the hyperparameter‑optimization study for *this* script run."""
         # ---- 1.  Build a unique study name ----
-        # Option A (timestamp).  Example: "xgboost_opt_20250510T091423Z"
-        run_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        # Option B (short uuid).  Example: "xgboost_opt_ab12"
-        # run_tag = uuid.uuid4().hex[:4]
-
-        study_name = f"{self.model_type}_opt_{run_tag}"
+        
+        if self.config['optimization']['if_continue']:
+            run_tag = self.config['optimization']['study_name']
+        else:
+            run_tag = generate_run_name(self.model_type)
+        # use run_tag directly, it already contains the model_type suffix
+            study_name = f"{self.model_type}_{run_tag}"
 
         # ---- 2.  Connect to the same SQLite storage ----
         storage = optuna.storages.RDBStorage(
@@ -503,7 +523,7 @@ class HyperparameterOptimizer:
             direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=SEED),
             storage=storage,
-            load_if_exists=False,          # <‑‑ force a fresh study
+            load_if_exists=self.config['optimization']['if_continue'],          # <‑‑ force a fresh study
         )
 
         # ---- 4.  Run exactly n_trials for *this* study ----
@@ -545,6 +565,14 @@ class ModelTrainer:
         self.impute_missing = config['preprocessing']['impute_missing']
         self.beta = config['optimization'].get('beta', 1.0)
         self.optimization_duration = optimization_duration or 0.0
+        self.numeric_cols = X_train.select_dtypes(include=['int64','float64']).columns.tolist()
+        self.categorical_cols = X_train.select_dtypes(exclude=['int64','float64']).columns.tolist()
+        
+        train_cfg = config.get('training', {})
+        cv_folds = config['optimization']['cv_folds']
+        self.val_frac = 1.0 / cv_folds        
+        self.early_stopping_rounds  = train_cfg.get('early_stopping_rounds', 0)
+        self.early_stopping_metric  = train_cfg.get('early_stopping_metric', None)
 
         # Set up results directory
         if results_dir is None:
@@ -577,34 +605,125 @@ class ModelTrainer:
                 # 2) Log optimization duration
                 mlflow.log_metric("optimization_duration", round(self.optimization_duration, 2))
 
-                # 3) **Build the pipeline** here, before you use it!
+                # 3) Build pipeline
                 pipeline = build_pipeline(
                     self.model_type,
                     self.best_params,
-                    self.impute_missing
+                    self.impute_missing,
+                    numeric_cols=self.numeric_cols,
+                    categorical_cols=self.categorical_cols
                 )
 
-                # 4) Apply class balancing
+                # 4) Compute class ratio and apply balancing via set_params
                 counts = self.y_train.value_counts()
-                class_ratio = (counts.loc[0] / counts.loc[1]) if (0 in counts.index and 1 in counts.index) else 1.0
-                pipeline.named_steps['model'] = ModelFactory.apply_class_balancing(
-                    pipeline.named_steps['model'],
-                    self.model_type,
-                    class_ratio
-                )
+                class_ratio = (counts[0] / counts[1]) if 0 in counts.index and 1 in counts.index else 1.0
 
-                # --- Train and time it
-                print(f"Training {self.model_type}...")
+                if self.model_type == 'xgboost':
+                    pipeline.set_params(model__scale_pos_weight=class_ratio)
+                elif self.model_type == 'lightgbm':
+                    pipeline.set_params(model__class_weight='balanced')
+                elif self.model_type == 'catboost':
+                    pipeline.set_params(model__auto_class_weights='Balanced')
+
+                print(f"Training {self.model_type}…")
                 train_start = time.time()
-                # Remove the undefined `trial` callback (unless you pass a real trial here)
-                pipeline.fit(self.X_train, self.y_train)
+
+                # 5) Early‐stopping logic
+                if self.early_stopping_rounds > 0:
+                    # carve out a hold‐out
+                    X_tr, X_val, y_tr, y_val = train_test_split(
+                        self.X_train, self.y_train,
+                        test_size=self.val_frac,
+                        random_state=SEED,
+                        stratify=self.y_train
+                    )
+
+                    # preprocess the train/val slices
+                    pre = pipeline.named_steps['preprocessor']
+                    X_tr_proc = pre.fit_transform(X_tr)
+                    X_val_proc = pre.transform(X_val)
+
+                    # grab the raw model
+                    model = pipeline.named_steps['model']
+
+                    # ensure the metric is on the model
+                    if self.early_stopping_metric:
+                        if self.model_type == 'xgboost':
+                            model.set_params(eval_metric=self.early_stopping_metric)
+                        elif self.model_type == 'lightgbm':
+                            model.set_params(metric=self.early_stopping_metric)
+                        elif self.model_type == 'catboost':
+                            # CatBoost uses 'eval_metric' but needs specific metric names
+                            # Map common metric names to CatBoost-specific ones
+                            catboost_metric_mapping = {
+                                'binary_logloss': 'Logloss',
+                                'auc': 'AUC',
+                                'error': 'Accuracy',
+                                # Add more mappings as needed
+                            }
+                            catboost_metric = catboost_metric_mapping.get(
+                                self.early_stopping_metric, 
+                                self.early_stopping_metric  # Default to the original if no mapping exists
+                            )
+                            model.set_params(eval_metric=catboost_metric)
+
+                    # Create proper eval_set for each model type
+                    if self.model_type == 'xgboost':
+                        eval_set = [(X_val_proc, y_val)]
+                        # Check XGBoost version to determine callback parameters
+                        import pkg_resources
+                        xgb_version = pkg_resources.get_distribution('xgboost').version
+                        
+                        # In newer XGBoost versions, verbose parameter is not supported
+                        if pkg_resources.parse_version(xgb_version) >= pkg_resources.parse_version('1.5.0'):
+                            # For newer XGBoost versions, don't use verbose parameter
+                            callback = [xgb.callback.EarlyStopping(
+                                rounds=self.early_stopping_rounds,
+                                save_best=True
+                            )]
+                        else:
+                            # For older XGBoost versions, include verbose parameter
+                            callback = [xgb.callback.EarlyStopping(
+                                rounds=self.early_stopping_rounds,
+                                save_best=True,
+                                verbose=False
+                            )]
+                        
+                        model.fit(
+                            X_tr_proc, y_tr,
+                            eval_set=eval_set,
+                            callbacks=callback
+                        )
+                    elif self.model_type == 'lightgbm':
+                        eval_set = [(X_val_proc, y_val)]
+                        callbacks = [lgb.early_stopping(self.early_stopping_rounds, verbose=False)]
+                        model.fit(
+                            X_tr_proc, y_tr,
+                            eval_set=eval_set,
+                            callbacks=callbacks
+                        )
+                    elif self.model_type == 'catboost':
+                        model.fit(
+                            X_tr_proc, y_tr,
+                            eval_set=(X_val_proc, y_val),
+                            early_stopping_rounds=self.early_stopping_rounds,
+                            verbose=False
+                        )
+                    else:
+                        model.fit(X_tr_proc, y_tr)
+
+                    # re-attach the trained model into the pipeline
+                    pipeline.set_params(model=model)
+
+                else:
+                    # no early stopping
+                    pipeline.fit(self.X_train, self.y_train)
+
                 train_duration = time.time() - train_start
                 print(f"Training done in {train_duration:.2f}s")
 
-                # 5) Log training duration
+                # 6) Log training & total durations
                 mlflow.log_metric("training_duration", round(train_duration, 2))
-
-                # 6) Compute and log total duration
                 total_duration = self.optimization_duration + train_duration
                 mlflow.log_metric("total_duration", round(total_duration, 2))
 
@@ -623,14 +742,17 @@ class ModelTrainer:
                     f"ROC_AUC={test_metrics['roc_auc']:.4f}"
                 )
 
-                # 8) Save artifacts – pass in train_duration, not an undefined name
+                # 8) Save artifacts
                 self._save_artifacts(pipeline, test_metrics, train_duration)
 
                 return pipeline, test_metrics
 
         except Exception as e:
             print(f"Error during training {self.model_type}: {e}")
+            import traceback
+            traceback.print_exc()  # Print the full traceback for debugging
             return None, None
+    
     
     def _save_artifacts(self, pipeline, test_metrics, duration):
         """Save model artifacts and log to MLflow if available."""
@@ -729,6 +851,8 @@ def main():
         target_col=config['data']['target_column'],
         date_col=config['data']['date_column']
     )
+
+    print(f"Number of original feature columns after dropping: {X_train.shape[1]}")
     
     # Train models
     results = {}
@@ -766,4 +890,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
