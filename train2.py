@@ -53,7 +53,7 @@ import optuna
 import mlflow
 import mlflow.sklearn
 
-from memory_profiler import profile
+# from memory_profiler import profile
 from optuna.integration import LightGBMPruningCallback, XGBoostPruningCallback
 from datetime import datetime, timezone
 
@@ -142,9 +142,8 @@ class DataLoader:
         """
         
         client = bigquery.Client(project=self.project_id)
-        df = client.query(query).to_dataframe(create_bqstorage_client=True,
-                                              dtype_backend="pyarrow"  # avoids object columns
-                                             ).convert_dtypes()
+        df = client.query(query).to_dataframe(create_bqstorage_client=True)
+        df = df.convert_dtypes(dtype_backend="pyarrow")
         print(f"Loaded {df.shape[0]} rows, {df.shape[1]} columns.")
         
         # Convert target to int
@@ -164,10 +163,20 @@ def prepare_data(df, target_col='Cancelled', date_col='FlightDate'):
 
 
 def drop_categoricals_to_numpy(X: pd.DataFrame) -> np.ndarray:
-    X_num = X.select_dtypes(exclude='object')
+    """
+    Extract only numeric columns from a DataFrame and convert to numpy array.
+    Works with both standard pandas dtypes and PyArrow-backed DataFrames.
+    """
+    # More explicitly filter to include only float and int columns
+    # This handles both standard pandas dtypes and PyArrow dtypes
+    X_num = X.select_dtypes(include=['int8', 'int16', 'int32', 'int64', 
+                                      'float16', 'float32', 'float64'])
+    
+    # Convert integer types to float32 to ensure consistent dtype
     for col in X_num.columns:
         if pd.api.types.is_integer_dtype(X_num[col]) or pd.api.types.is_sparse(X_num[col]):
             X_num[col] = X_num[col].astype('float32', copy=False)
+    
     return X_num.to_numpy(dtype=np.float32, copy=False)
 
 
@@ -185,7 +194,7 @@ class ModelFactory:
                 'tree_method': 'hist',
                 'n_jobs': 4,
                 'random_state': SEED,
-                'verbosity': 2
+                'verbosity': 0
             }
             if params:
                 default_params.update(params)
@@ -350,7 +359,6 @@ class FeatureImportancePlotter:
 
 
 # === HYPERPARAMETER OPTIMIZATION ===
-@profile
 class HyperparameterOptimizer:
     """Handles hyperparameter optimization using Optuna."""
     
@@ -525,7 +533,8 @@ class HyperparameterOptimizer:
 class ModelTrainer:
     """Handles model training, evaluation, and artifact saving."""
     
-    def __init__(self, X_train, X_test, y_train, y_test, model_type, best_params, config, results_dir=None):
+    def __init__(self, X_train, X_test, y_train, y_test, model_type, best_params, config,
+                 results_dir=None, optimization_duration=None):
         self.X_train = X_train
         self.X_test = X_test
         self.y_train = y_train
@@ -535,7 +544,8 @@ class ModelTrainer:
         self.config = config
         self.impute_missing = config['preprocessing']['impute_missing']
         self.beta = config['optimization'].get('beta', 1.0)
-        
+        self.optimization_duration = optimization_duration or 0.0
+
         # Set up results directory
         if results_dir is None:
             self.run_name = generate_run_name(model_type)
@@ -553,56 +563,71 @@ class ModelTrainer:
         except Exception:
             self.mlflow_available = False
             print(f"Warning: MLflow is not available. Training {model_type} without tracking.")
-    @profile
+
     def train(self):
         """Train the model, evaluate, and save artifacts."""
         try:
-            # Start MLflow run if available
+            # 1) Start MLflow run if available
             if self.mlflow_available:
                 mlflow_run = mlflow.start_run(run_name=self.run_name)
             else:
                 mlflow_run = nullcontext()
-            
+
             with mlflow_run:
-                # Build pipeline
-                pipeline = build_pipeline(self.model_type, self.best_params, self.impute_missing)
-                
-                # Apply class balancing
+                # 2) Log optimization duration
+                mlflow.log_metric("optimization_duration", round(self.optimization_duration, 2))
+
+                # 3) **Build the pipeline** here, before you use it!
+                pipeline = build_pipeline(
+                    self.model_type,
+                    self.best_params,
+                    self.impute_missing
+                )
+
+                # 4) Apply class balancing
                 counts = self.y_train.value_counts()
                 class_ratio = (counts.loc[0] / counts.loc[1]) if (0 in counts.index and 1 in counts.index) else 1.0
                 pipeline.named_steps['model'] = ModelFactory.apply_class_balancing(
-                    pipeline.named_steps['model'], 
-                    self.model_type, 
+                    pipeline.named_steps['model'],
+                    self.model_type,
                     class_ratio
                 )
-                
-                # Train model
+
+                # --- Train and time it
                 print(f"Training {self.model_type}...")
-                start = time.time()
-                pipeline.fit(self.X_train, self.y_train, callbacks=[LightGBMPruningCallback(trial, "binary_logloss"))
-                duration = time.time() - start
-                print(f"Done in {duration:.2f}s")
-                
-                # Evaluate
+                train_start = time.time()
+                # Remove the undefined `trial` callback (unless you pass a real trial here)
+                pipeline.fit(self.X_train, self.y_train)
+                train_duration = time.time() - train_start
+                print(f"Training done in {train_duration:.2f}s")
+
+                # 5) Log training duration
+                mlflow.log_metric("training_duration", round(train_duration, 2))
+
+                # 6) Compute and log total duration
+                total_duration = self.optimization_duration + train_duration
+                mlflow.log_metric("total_duration", round(total_duration, 2))
+
+                # 7) Evaluate
                 evaluator = ModelEvaluator(beta=self.beta)
                 y_train_p = pipeline.predict_proba(self.X_train)[:, 1]
                 train_metrics = evaluator.evaluate(self.y_train, y_train_p)
-                
+
                 y_test_p = pipeline.predict_proba(self.X_test)[:, 1]
                 test_metrics = evaluator.evaluate(self.y_test, y_test_p)
-                
+
                 print(
                     f"{self.model_type} Test Metrics: "
                     f"F1={test_metrics['f1']:.4f}, "
                     f"F{self.beta}={test_metrics['fbeta']:.4f}, "
                     f"ROC_AUC={test_metrics['roc_auc']:.4f}"
                 )
-                
-                # Save artifacts
-                self._save_artifacts(pipeline, test_metrics, duration)
-                
+
+                # 8) Save artifacts – pass in train_duration, not an undefined name
+                self._save_artifacts(pipeline, test_metrics, train_duration)
+
                 return pipeline, test_metrics
-        
+
         except Exception as e:
             print(f"Error during training {self.model_type}: {e}")
             return None, None
@@ -710,9 +735,11 @@ def main():
     for model_type in config['models']:
         print(f"\n=== Training {model_type.upper()} ===")
         
-        # Optimize hyperparameters
+        # --- 1a. Run hyperparameter optimization and time it
         optimizer = HyperparameterOptimizer(X_train, y_train, model_type, config)
+        opt_start = time.time()
         best_params, _, _ = optimizer.optimize()
+        opt_duration = time.time() - opt_start
         
         # Create a dedicated directory for this run
         run_name = generate_run_name(model_type)
@@ -721,8 +748,9 @@ def main():
         
         # Train and evaluate model
         trainer = ModelTrainer(
-            X_train, X_test, y_train, y_test,
-            model_type, best_params, config, results_dir
+             X_train, X_test, y_train, y_test,
+             model_type, best_params, config, results_dir,
+             optimization_duration=opt_duration
         )
         _, metrics = trainer.train()
         
@@ -738,3 +766,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
