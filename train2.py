@@ -304,7 +304,7 @@ class ModelFactory:
                 'metric': 'binary_logloss',
                 'n_jobs': 4,
                 'random_state': SEED,
-                'verbose': 2
+                'verbose': -1
             }
             if params:
                 default_params.update(params)
@@ -316,7 +316,9 @@ class ModelFactory:
                 'eval_metric': 'Recall',     # Keep using 'Recall'
                 'thread_count': 4,
                 'random_seed': SEED,
-                'verbose': True
+                'verbose': True,
+                'one_hot_max_size': 10,  # One-hot encode only categories with < 10 unique values
+                'max_ctr_complexity': 1,  # Reduce complexity of categorical features
             }
             if params:
                 default_params.update(params)
@@ -362,7 +364,7 @@ def build_pipeline(
     
     # categorical preprocessing
     cat_steps = [
-        ('impute',  SimpleImputer(strategy='most_frequent')),
+        ('impute',  SimpleImputer(strategy='constant', fill_value='unknown')), # TODO: error!!! 
         ('onehot',  OneHotEncoder(handle_unknown='ignore', sparse_output=True))
     ]
     
