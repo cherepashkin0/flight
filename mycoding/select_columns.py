@@ -2,9 +2,19 @@ import os
 from google.cloud import bigquery
 import yaml
 import pandas as pd
+from datetime import datetime
+from matplotlib import pyplot as plt
+import seaborn as sns
+from matplotlib.backends.backend_pdf import PdfPages
+from sklearn.model_selection import train_test_split
+from phik import phik_matrix
+import numpy as np
+
+today_date = datetime.today().strftime('%Y-%m-%d')
+
 
 project_id = os.environ.get('GCP_PROJECT_ID')
-
+table_id = f'{project_id}.flights.flights_all'
 
 def load_all_columns():
     client = bigquery.Client(project=project_id)
@@ -17,47 +27,62 @@ def load_all_columns():
     lst = [name[0] for name in df.values]
     return lst
 
-def load_drop(file_pathes):
-    lst = []
-    for file_name in file_pathes:
-        with open(file_name, 'r') as file:
-            cur_lst = file.readlines()
-        cur_lst = [word.strip('\n') for word in cur_lst]
-        lst = cur_lst + lst
-    lst = list(set(lst))
-    lst.sort()
-    return lst
+def plots2pdf(plots, fname):
+    with PdfPages(fname) as pp:
+        for plot in plots:
+           pp.savefig(plot.figure)
 
-def describe_data_bg():
+def histogram_create():
+    describe_df = pd.read_csv('results/flights_all_analysis.csv')
+    print(describe_df['Role'].value_counts())
     client = bigquery.Client(project=project_id)
+    num_cols = [name[0] for name in describe_df[describe_df['Role']=='num'].values.tolist()]
+    num_cols += ["Cancelled"]
+    print(num_cols)
     query = f"""
-            SELECT 
-                '{col_name}' AS Column_Name,
-                '{col_type}' AS Data_Type,
-                CAST(MIN({col_name}) AS STRING) AS Min_Value,
-                CAST(MAX({col_name}) AS STRING) AS Max_Value,
-                COUNT(DISTINCT {col_name}) AS Unique_Values_Count,
-                COUNT(*) - COUNT({col_name}) AS Missing_Values_Count,
-                AVG({col_name}) AS Mean_Value,
-                STDDEV({col_name}) AS Std_Dev,
-                (SELECT STRING_AGG(CAST(sample AS STRING), ', ')
-                 FROM (
-                     SELECT DISTINCT {col_name} AS sample
-                     FROM `{table_id}`
-                     WHERE {col_name} IS NOT NULL
-                     LIMIT 5
-                 )) AS Sample_Values
+            SELECT {", ".join(num_cols)}
             FROM `{table_id}`
+            ORDER BY RAND()
+            LIMIT 100000
             """
     df = client.query(query).to_dataframe(create_bqstorage_client=True)
+    lst_of_histograms = []
+    for col_name in df.columns:
+        if col_name != 'Cancelled':
+            fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+            
+            sns.histplot(data=df[[col_name, 'Cancelled']], x=col_name, hue='Cancelled', alpha=0.4, stat='density', common_norm=False, ax=ax, bins=100)
+            lst_of_histograms.append(ax)
+            plt.close(fig)
+
+    plots2pdf(lst_of_histograms, os.path.join('results', today_date, 'histogram_nums.pdf'))
+    return num_cols
+
+
+def train_test_split_create(num_cols):
+    client = bigquery.Client(project=project_id)
+    query = f"""
+            SELECT {", ".join(num_cols)}
+            FROM `{table_id}`
+            LIMIT 100000
+            """
+    df = client.query(query).to_dataframe(create_bqstorage_client=True)
+    X_train, X_test, y_train, y_test = train_test_split(df.drop(columns=['Cancelled']), df[['Cancelled']], test_size=0.10, random_state=42)
+    # print(X_train.shape, X_test.shape, y_train.shape, y_test.shape)
+    return X_train, X_test, y_train, y_test
+
+
+def phik_create_matrix(X_train, y_train, num_cols):
+    df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
+    df.columns = num_cols + ['Cancelled']
+    phik_corr = phik_matrix(df, interval_cols=df.columns, dropna=True, verbose=1)
+    print(phik_corr)
+
 
 def main():   
-    drop_lst = load_drop(['columns_to_drop_high_correlation.txt',
-                   'columns_to_drop_leakage.txt',
-                   'columns_to_drop_low_importance.txt',
-                   'columns_to_drop_id.txt'])
-    all_column_lst = load_all_columns()
-    print(list(set(all_column_lst) - set(drop_lst)))
+    num_cols = histogram_create()
+    X_train, X_test, y_train, y_test = train_test_split_create(num_cols)
+    phik_create_matrix(X_train, y_train, num_cols)
 
 if __name__ == "__main__":
     main()
