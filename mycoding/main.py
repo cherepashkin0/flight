@@ -69,7 +69,13 @@ def train_test_split_create(dct_cols):
             LIMIT {SAMPLE_SIZE}
             """
     df = client.query(query).to_dataframe(create_bqstorage_client=True)
-    X_train, X_test, y_train, y_test = train_test_split(df.drop(columns=['Cancelled']), df[['Cancelled']], test_size=0.10, random_state=42)
+
+    train_idx, test_idx = train_test_split(df.index, test_size=0.10, random_state=42, stratify=df['Cancelled'])
+
+    X_train = df.drop(columns=['Cancelled']).iloc[train_idx]
+    X_test = df.drop(columns=['Cancelled']).iloc[test_idx]
+    y_train = df[['Cancelled']].iloc[train_idx]
+    y_test = df[['Cancelled']].iloc[test_idx]
     return X_train, X_test, y_train, y_test
 
 
@@ -77,7 +83,6 @@ def phik_create_matrix(X_train, y_train, dct_cols):
     skip_cols = describe_df.loc[describe_df['Skip_reason_phik'].isin(['id', 'high_cardinality']), 'Column_Name'].tolist()
     all_columns = [col for cols in dct_cols.values() for col in cols]
     df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
-    df.columns = all_columns + ['Cancelled']
     df = df.drop(columns=skip_cols)
     filtered_dct_cols = {}
     for key, cols in dct_cols.items():
