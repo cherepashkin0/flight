@@ -12,6 +12,8 @@ import numpy as np
 from pathlib import Path
 pd.options.display.max_rows = None
 pd.set_option('display.max_rows', None)
+import lightgbm as lgb
+from sklearn.metrics import f1_score
 
 
 project_id = os.environ.get('GCP_PROJECT_ID')
@@ -78,8 +80,8 @@ def train_test_split_create(dct_cols):
     return X_train, X_test, y_train, y_test
 
 def drop_skip_cols(df, skip_cols, dct_cols):
-    existing_cols = [col for col in skip_cols if col in df.columns]
-    df = df.drop(columns=existing_cols)
+    cols_existing_to_skip = [col for col in skip_cols if col in df.columns]
+    df = df.drop(columns=cols_existing_to_skip)
     filtered_dct_cols = {}
     for key, cols in dct_cols.items():
         filtered_dct_cols[key] = [col for col in cols if col not in skip_cols]
@@ -96,25 +98,55 @@ def phik_create_matrix(X_train, y_train, dct_cols):
     df[filtered_dct_cols['num']] = df[filtered_dct_cols['num']].astype(float)
     cat_cols = filtered_dct_cols['cat'] + filtered_dct_cols['hot']
     df[cat_cols] = df[cat_cols].astype('category')
-    # print('Columns before phik correlation \n', df.dtypes)
-    print(df[filtered_dct_cols['num']].dtypes)
     phik_corr = phik_matrix(df, interval_cols=filtered_dct_cols['num'], dropna=True, verbose=1)
-        # interval_cols=filtered_dct_cols['num'], 
-    # phik_long = phik_corr.stack().reset_index()
-    # phik_long.columns = ['column_a', 'column_b', 'value']
-    # phik_long = phik_long[phik_long['column_a'] != phik_long['column_b']]
-    # phik_long = 
+    phik_long = phik_corr.stack().reset_index()
+    phik_long.columns = ['column_a', 'column_b', 'value']
+    phik_long = phik_long[phik_long['column_a'] != phik_long['column_b']]
+    phik_long['min_col'] = phik_long[['column_a', 'column_b']].min(axis=1)
+    phik_long['max_col'] = phik_long[['column_a', 'column_b']].max(axis=1)
+    phik_long_unique = phik_long[['min_col', 'max_col', 'value']].drop_duplicates()
+    phik_long_unique.columns = ['column_a', 'column_b', 'value']
+    phik_corr.to_csv(os.path.join(today_dir, 'phik_matrix.csv'))
+    phik_long_unique.to_csv(os.path.join(today_dir, 'phik_long.csv'), index=False)
 
+def f1_eval(y_pred, dataset):
+    y_true = dataset.get_label()
+    y_pred_binary = (y_pred > 0.5).astype(int)
+    return 'f1', f1_score(y_true, y_pred_binary), True
 
-def train(X_train, y_train, dct_cols):
-    # skip_cols = describe_df.loc[describe_df['Skip_reason_phik'] or describe_df['Phik_high_target'], 'Column_Name'].tolist()
+def train(X_train, X_test, y_train, y_test, dct_cols):
+    skip_cols = describe_df.loc[
+        (describe_df['Skip_reason_phik'].notna()) | (describe_df['Phik_high_target'].notna()),
+        'Column_Name'
+    ].tolist()
+    X_train, filtered_dct_cols = drop_skip_cols(X_train, skip_cols, dct_cols)
+    X_test, filtered_dct_cols = drop_skip_cols(X_test, skip_cols, dct_cols)
+    cat_cols = filtered_dct_cols['cat'] + filtered_dct_cols['hot']
+    X_train[cat_cols] = X_train[cat_cols].astype('category')
+    X_test[cat_cols] = X_test[cat_cols].astype('category')
 
-    # X_train, filtered_dct_cols = drop_skip_cols(X_train, skip_cols, dct_cols)
-    # X_test, filtered_dct_cols = drop_skip_cols(X_test, skip_cols, dct_cols)
-    # X_train[['Diverted']] = df[['Diverted']].astype('int8')
-    # X_test[['Diverted']] = 
-    pass
+    print("Remaining numeric features:", filtered_dct_cols['num'])
+    print("Remaining categorical features:", cat_cols)
+    print("X_train shape:", X_train.shape)
 
+    train_data = lgb.Dataset(X_train,
+                             label=y_train.squeeze(),
+                             feature_name=filtered_dct_cols['num'] + cat_cols,
+                             categorical_feature=cat_cols)
+    param = {
+        'objective': 'binary',
+        'metric': 'None',
+        'num_leaves': 31,
+        'min_data_in_leaf': 5,            # 🔽 меньше ограничение на количество наблюдений
+        'min_gain_to_split': 0.0,         # 🔽 разрешаем сплиты с 0 приростом
+        'max_depth': 10,                  # 🔽 ограничиваем глубину
+        'verbosity': 1
+    }
+    num_round = 10
+    cv_results = lgb.cv(param, train_data, num_round, nfold=2, feval=f1_eval, stratified=True, seed=42, return_cvbooster=False)
+    best_round = len(cv_results['f1-mean']) if 'f1-mean' in cv_results else len(cv_results['binary_logloss-mean'])
+    final_model = lgb.train(param, train_data, num_boost_round=best_round)
+    final_model.save_model(os.path.join(today_dir, 'model.txt'))
 
 
 def main():
@@ -123,8 +155,8 @@ def main():
         dct_cols[key] = describe_df.loc[describe_df['Role'] == key, 'Column_Name'].sort_values().tolist()   
     # histogram_create(dct_cols)
     X_train, X_test, y_train, y_test = train_test_split_create(dct_cols)
-    phik_create_matrix(X_train, y_train, dct_cols)
-    train(X_train, y_train, dct_cols)
+    # phik_create_matrix(X_train, y_train, dct_cols)
+    train(X_train, X_test, y_train, y_test, dct_cols)
 
 if __name__ == "__main__":
     today_date = datetime.today().strftime('%Y-%m-%d')
