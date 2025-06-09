@@ -14,6 +14,7 @@ pd.options.display.max_rows = None
 pd.set_option('display.max_rows', None)
 import lightgbm as lgb
 from sklearn.metrics import f1_score
+import optuna
 
 
 project_id = os.environ.get('GCP_PROJECT_ID')
@@ -67,6 +68,7 @@ def train_test_split_create(dct_cols):
     query = f"""
             SELECT {", ".join(all_columns)}
             FROM `{table_id}`
+            WHERE rand() < {SAMPLE_SIZE}/30000000
             LIMIT {SAMPLE_SIZE}
             """
     df = client.query(query).to_dataframe(create_bqstorage_client=True)
@@ -116,7 +118,7 @@ def f1_eval(y_pred, dataset):
 
 def train(X_train, X_test, y_train, y_test, dct_cols):
     skip_cols = describe_df.loc[
-        (describe_df['Skip_reason_phik'].notna()) | (describe_df['Phik_high_target'].notna()),
+        (describe_df['Skip_reason_phik'].notna()) | (describe_df['Phik_high_target'].notna()) | (describe_df['Data_leakage'].notna()),
         'Column_Name'
     ].tolist()
     X_train, filtered_dct_cols = drop_skip_cols(X_train, skip_cols, dct_cols)
@@ -124,29 +126,80 @@ def train(X_train, X_test, y_train, y_test, dct_cols):
     cat_cols = filtered_dct_cols['cat'] + filtered_dct_cols['hot']
     X_train[cat_cols] = X_train[cat_cols].astype('category')
     X_test[cat_cols] = X_test[cat_cols].astype('category')
-
     print("Remaining numeric features:", filtered_dct_cols['num'])
     print("Remaining categorical features:", cat_cols)
     print("X_train shape:", X_train.shape)
+    # print("Non-null per column:\n", X_train.notna().sum())
+    # zero_var = X_train.nunique(dropna=False) <= 1
+    # print("Zero-variance features:", zero_var[zero_var].index.tolist())
+    # Check class distribution
+    class_counts = y_train.value_counts()
+    print(f"Class distribution: {class_counts.to_dict()}")
+    pos_weight = class_counts[0] / class_counts[1]
+    print(f"Calculated pos_weight (for class imbalance): {pos_weight:.2f}")
+
+    print("Final features shape:", X_train.shape)
+    # print("Number of non-null values:\n", X_train.notnull().sum())
+    # print("Unique values per categorical column:\n", X_train[cat_cols].nunique())
 
     train_data = lgb.Dataset(X_train,
                              label=y_train.squeeze(),
                              feature_name=filtered_dct_cols['num'] + cat_cols,
                              categorical_feature=cat_cols)
-    param = {
-        'objective': 'binary',
-        'metric': 'None',
-        'num_leaves': 31,
-        'min_data_in_leaf': 5,            # 🔽 меньше ограничение на количество наблюдений
-        'min_gain_to_split': 0.0,         # 🔽 разрешаем сплиты с 0 приростом
-        'max_depth': 10,                  # 🔽 ограничиваем глубину
-        'verbosity': 1
-    }
-    num_round = 10
-    cv_results = lgb.cv(param, train_data, num_round, nfold=2, feval=f1_eval, stratified=True, seed=42, return_cvbooster=False)
-    best_round = len(cv_results['f1-mean']) if 'f1-mean' in cv_results else len(cv_results['binary_logloss-mean'])
-    final_model = lgb.train(param, train_data, num_boost_round=best_round)
-    final_model.save_model(os.path.join(today_dir, 'model.txt'))
+
+    def objective(trial):
+        classifier_name = trial.suggest_categorical('classifier', ['lightgbm'])
+        if classifier_name == 'lightgbm':
+            param = {
+                'objective': 'binary',
+                'metric': 'binary_logloss',
+                'boosting_type': 'gbdt',
+                'num_leaves': trial.suggest_int('lightgbm_num_leaves', 2, 15, log=True),
+                'min_data_in_leaf': 1,        
+                'min_gain_to_split': 0.0001,  
+                'max_depth': trial.suggest_int('lightgbm_max_depth', 10, 250, log=True), 
+                'learning_rate': trial.suggest_float('lightgbm_learning_rate', 1e-5, 1e-2, log=True),
+                'feature_fraction': 0.8,
+                'bagging_fraction': 0.8, 
+                'bagging_freq': 5,
+                'lambda_l1': 0.1, 
+                'lambda_l2': 0.1,
+                'scale_pos_weight': pos_weight,
+                'verbosity': 1,
+                'seed': 42
+            }
+            cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, feval=f1_eval, stratified=True, seed=42, return_cvbooster=False)
+            result_metric = np.mean(cv_results['valid f1-mean'])
+        return result_metric
+    study = optuna.create_study()
+    study.optimize(objective, n_trials=10)
+    # num_round = 10
+    # tmp_cols = filtered_dct_cols['num'][:5] + cat_cols[:3]
+    # tmp_train = lgb.Dataset(X_train[tmp_cols], label=y_train.squeeze(),
+    #                         categorical_feature=[c for c in tmp_cols if c in cat_cols])
+    # print(model.dump_model(num_iteration=10)['tree_info'][:1])
+
+    # cv_results = lgb.cv(
+    #     param,
+    #     train_data,
+    #     num_boost_round=1000,
+    #     nfold=3,
+    #     feval=f1_eval,
+    #     stratified=True,
+    #     seed=42,
+    #     return_cvbooster=False,
+    #     callbacks=[
+    #         lgb.early_stopping(stopping_rounds=50, verbose=True),
+    #         lgb.log_evaluation(period=10)
+    #     ]
+    # )
+    # print("Available metrics in cv_results:", list(cv_results.keys()))
+    # best_round = len(cv_results['valid f1-mean'])
+    # final_model = lgb.train(param, train_data, num_boost_round=best_round)
+    # final_model.save_model(os.path.join(today_dir, 'model.txt'))
+    # fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+    # lgb.plot_importance(final_model, max_num_features=20, ax=ax)
+    # fig.savefig(os.path.join(today_dir, 'feautre_importance_final.png'))
 
 
 def main():

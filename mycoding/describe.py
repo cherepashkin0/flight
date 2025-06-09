@@ -9,7 +9,6 @@ tdy = datetime.today().strftime('%Y-%m-%d')
 def analyze_bigquery_table(
     table_id: str,
     project: str = None,
-    output_path: str = None
 ):
     """
     Analyze a BigQuery table and save detailed column information to CSV,
@@ -20,11 +19,10 @@ def analyze_bigquery_table(
         project: GCP project ID (if not included in table_id)
         output_path: Where to save the CSV (defaults to './<table>_analysis.csv')
     """
-    if output_path is None:
-        table_name = table_id.split('.')[-1]
-        output_path = os.path.join('results', tdy, table_name + '_analysis.csv')
-        Path(output_path).mkdir(exist_ok=True, parents=True)
-
+    output_dir = os.path.join('results')
+    Path(output_dir).mkdir(exist_ok=True, parents=True)
+    output_path = os.path.join(output_dir, table_id.split('.')[-1] + '_analysis.csv')
+    print(output_path)
     # Initialize client
     bq_client = bigquery.Client(project=project)
     
