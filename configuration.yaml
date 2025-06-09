@@ -1,0 +1,14 @@
+one_hot_categorical
+- 1
+- 2
+not_one_hot_categorical
+- 3
+- 4
+columns_to_drop_high_correlation
+- 5
+- 6
+columns_to_drop_id
+- 7
+columns_to_drop_leakage
+- 8
+columns_to_drop_low_importance

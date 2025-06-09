@@ -2,30 +2,69 @@
 data:
   dataset: "flights"
   table: "flights_all"
-  limit: 100000        
+  limit: 100000
   target_column: "Cancelled"
   date_column: "FlightDate"
   columns_to_drop_id: "columns_to_drop_id.txt"
   columns_to_drop_high_correlation: "columns_to_drop_high_correlation.txt"
   columns_to_drop_leakage: "columns_to_drop_leakage.txt"
+  columns_to_drop_low_importance: "columns_to_drop_low_importance.txt"
   post_event_columns: []
 
 models:
-  - "xgboost"
+  # - "xgboost"
   - "lightgbm"
-  - "catboost"
+  # - "catboost"
 
 preprocessing:
   impute_missing: false
+  include_categorical: true
+  manual_column_types:
+    numerical:
+     - 
+    one_hot_categorical:
+      - DOT_ID_Marketing_Airline
+      - IATA_Code_Marketing_Airline
+      - Marketing_Airline_Network    
+    not_one_hot_categorical:
+      - Year
+      - Quarter
+      - Month
+      - DayofMonth
+      - DayOfWeek
+      - DistanceGroup
+      - OriginStateFips
+      - DestStateFips
+      - OriginWac
+      - DestWac
+      - DOT_ID_Operating_Airline
+      - DepartureDelayGroups
+      - IATA_Code_Marketing_Airline
+      - Marketing_Airline_Network
 
 optimization:
-  n_trials: 2                   # just two Optuna trials
-  cv_folds: 2                   # two-fold CV
-  beta: 0.25
+  n_trials: 20  
+  cv_folds: 2 
+  beta: 1.5
+  if_continue: false            
+  study_name: "flights_dry_run"  # name of the Optuna study
 
 mlflow:
   tracking_uri: "./mlruns"
   experiment_name: "Flight_Cancellation_Prediction_DryRun"
+
+training:
+  # Fraction of train set to hold out for early‐stop validation 
+  validation_fraction: 0.1
+
+  # Stop if no “significant” improvement in this many rounds
+  early_stopping_rounds: 50
+
+  # Minimum relative change in the monitored metric to count as an improvement
+  early_stopping_threshold: 0.001
+
+  # Which metric to monitor (must be supported by the learner)
+  early_stopping_metric: "binary_logloss"
 
 hyperparameters:
   xgboost:
@@ -44,17 +83,18 @@ hyperparameters:
       gamma: 0.0
       subsample: 1.0
       colsample_bytree: 1.0
+  
 
   lightgbm:
     optimize:
       num_leaves:
         min: 20
-        max: 50
+        max: 150
       learning_rate:
         min: 0.1
         max: 0.2
       n_estimators:
-        min: 50
+        min: 25
         max: 200
     fixed:
       min_child_samples: 20
@@ -72,8 +112,8 @@ hyperparameters:
         min: 0.01
         max: 0.2
       iterations:
-        min: 50
-        max: 200
+        min: 5
+        max: 20
     fixed:
       l2_leaf_reg: 3.0
       bagging_temperature: 1.0

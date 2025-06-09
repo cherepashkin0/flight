@@ -4,30 +4,54 @@
 data:
   dataset: "flights"
   table: "flights_all"
-  # limit: 32000000
-  limit: 100000
+  limit: 3200000
+  # limit: 100000
   target_column: "Cancelled"
   date_column: "FlightDate"
   columns_to_drop_id: "columns_to_drop_id.txt"
   columns_to_drop_high_correlation: "columns_to_drop_high_correlation.txt"
   columns_to_drop_leakage: "columns_to_drop_leakage.txt"
+  columns_to_drop_low_importance: "columns_to_drop_low_importance.txt"
   post_event_columns: [] # Add any columns that are post-event
 
 # Models to train
 models:
-  - "xgboost"
+  # - "xgboost"
   - "lightgbm"
-  - "catboost"
+  # - "catboost"
 
 # Preprocessing settings
 preprocessing:
   impute_missing: false
+  categorical_columns:
+    - Year
+    - Quarter
+    - Month
+    - DayofMonth
+    - DayOfWeek
+    - DistanceGroup
+    - OriginStateFips
+    - DestStateFips
+    - OriginWac
+    - DestWac
+    - DOT_ID_Operating_Airline
+    - DepartureDelayGroups
+    - IATA_Code_Marketing_Airline
+    - Marketing_Airline_Network    
+  include_categorical: true
+  one_hot_columns:
+    - DOT_ID_Marketing_Airline
+    - IATA_Code_Marketing_Airline
+    - Marketing_Airline_Network
+
 
 # Hyperparameter optimization settings
 optimization:
-  n_trials: 10
-  cv_folds: 3
-  beta: 0.25
+  n_trials: 8
+  cv_folds: 2
+  beta: 1.5
+  if_continue: false            # don't continue from previous trials
+  study_name: "flights"  # name of the Optuna study  
 
 # MLflow settings
 mlflow:
@@ -41,13 +65,13 @@ hyperparameters:
     optimize:
       max_depth:
         min: 3
-        max: 10
+        max: 7
       learning_rate:
-        min: 0.01
+        min: 0.1
         max: 0.3
       n_estimators:
-        min: 50
-        max: 500
+        min: 100
+        max: 300
     # all other params stay fixed
     fixed:
       min_child_weight: 1
@@ -59,13 +83,13 @@ hyperparameters:
     optimize:
       num_leaves:
         min: 20
-        max: 150
+        max: 40
       learning_rate:
-        min: 0.01
+        min: 0.1
         max: 0.3
       n_estimators:
-        min: 50
-        max: 500
+        min: 100
+        max: 300
     fixed:
       min_child_samples: 20
       subsample: 1.0
@@ -76,14 +100,14 @@ hyperparameters:
   catboost:
     optimize:
       depth:
-        min: 4
-        max: 10
+        min: 3
+        max: 7
       learning_rate:
-        min: 0.01
+        min: 0.1
         max: 0.3
       iterations:
         min: 50
-        max: 500
+        max: 100
     fixed:
       l2_leaf_reg: 3.0
       bagging_temperature: 1.0
