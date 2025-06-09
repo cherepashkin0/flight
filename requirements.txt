@@ -14,3 +14,11 @@ mlflow
 optuna[visualization] 
 kaleido
 wandb
+fastparquet
+polars
+tabulate
+pdfpages
+google-cloud
+google-cloud-bigquery
+google-cloud-bigquery-storage
+db-dtypes

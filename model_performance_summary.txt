@@ -1,0 +1,24 @@
+=== FLIGHT CANCELLATION PREDICTION MODEL SUMMARY ===
+
+Model: Logistic Regression
+Dataset size: 29193782 flights
+Class imbalance: 36.56:1
+
+=== PERFORMANCE METRICS ===
+ROC-AUC: 0.6346
+Precision: 0.0407
+Recall: 0.6727
+F1 Score: 0.0767
+Accuracy: 0.5690
+
+Optimal threshold: 0.50
+
+=== TOP PREDICTIVE FEATURES ===
+1. DivAirportLandings: 0.402691
+2. Month: -0.117324
+3. Quarter: -0.100922
+4. ArrDel15: -0.024041
+5. ArrivalDelayGroups: 0.008352
+6. DestStateFips: 0.003617
+7. DestWac: -0.003263
+8. ArrDelayMinutes: -0.000322

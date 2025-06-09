@@ -1,0 +1,4 @@
+DepTime_Total
+WheelsOff_Total
+WheelsOn_Total
+ArrTime_Total
