@@ -139,35 +139,64 @@ class ArtifactManager:
 
 # === COLUMN TYPE DETECTION ===
 class ColumnTypeDetector:
-    """Single source of truth for column type detection."""
+    """Single source of truth for column type detection with manual YAML configuration."""
     
     NUMERIC_DTYPES = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64', 'Int64', 'Float64']
     CATEGORICAL_DTYPES = ['object', 'string', 'category']
     
     @classmethod
     def detect_types(cls, df, config):
-        """Detect numeric and categorical columns based on data types and config."""
-        # Get actual column types
+        manual_config = config['preprocessing'].get('manual_column_types')
+        if manual_config:
+            return cls._get_manual_column_types(df, manual_config)
+        else:
+            return cls._get_automatic_column_types(df, config)
+    
+    @classmethod
+    def _get_manual_column_types(cls, df, manual_config):
+        all_columns = set(df.columns)
+
+        onehot_categorical = [col for col in manual_config.get('one_hot_categorical', []) if col in all_columns]
+        not_onehot_categorical = [col for col in manual_config.get('not_one_hot_categorical', []) if col in all_columns]
+        numerical = [col for col in manual_config.get('numerical', []) if col in all_columns]
+        
+        # Warn if columns are missing (optional, but helpful)
+        for group_name, config_cols in [
+            ('one_hot_categorical', manual_config.get('one_hot_categorical', [])),
+            ('not_onehot_categorical', manual_config.get('not_one_hot_categorical', [])),
+            ('numerical', manual_config.get('numerical', []))
+        ]:
+            missing = set(config_cols) - all_columns
+            if missing:
+                logger.warning(f"The following columns from '{group_name}' are not in the DataFrame and will be ignored: {missing}")
+
+        if not numerical:
+            used_columns = set(onehot_categorical + not_onehot_categorical)
+            numerical = [col for col in df.columns if col not in used_columns]
+            logger.info(f"No numerical columns specified, using remaining {len(numerical)} columns as numerical")
+        logger.info(f"Manual column configuration:")
+        logger.info(f"  - Numerical: {len(numerical)}")
+        logger.info(f"  - One-hot categorical: {len(onehot_categorical)}")
+        logger.info(f"  - Not-one-hot categorical: {len(not_onehot_categorical)}")
+        return numerical, onehot_categorical, not_onehot_categorical
+
+    @classmethod
+    def _get_automatic_column_types(cls, df, config):
         actual_numeric = df.select_dtypes(include=cls.NUMERIC_DTYPES).columns.tolist()
         actual_categorical = df.select_dtypes(include=cls.CATEGORICAL_DTYPES).columns.tolist()
-        
-        # Apply configuration
         include_cat = config['preprocessing'].get('include_categorical', True)
-        
         if include_cat:
             cfg_cat = config['preprocessing'].get('categorical_columns', [])
             cat_cols = cls._filter_valid_columns(cfg_cat, actual_categorical, df.columns, 'categorical')
         else:
             cat_cols = []
-        
-        # Determine numeric columns
         cfg_num = config['preprocessing'].get('numeric_columns')
         if cfg_num:
             num_cols = cls._filter_valid_columns(cfg_num, actual_numeric, df.columns, 'numeric')
         else:
             num_cols = [c for c in actual_numeric if c not in cat_cols]
-        
-        return num_cols, cat_cols
+        # By default, all cats as one-hot, and not_onehot_cat empty
+        return num_cols, cat_cols, []
     
     @staticmethod
     def _filter_valid_columns(configured, actual_type, all_columns, column_type):
@@ -325,18 +354,18 @@ class ModelFactory:
 
 
 def build_pipeline(model_type, params=None, config=None, X_train=None):
-    """Build preprocessing + model pipeline with automatic column detection."""
+    """Build preprocessing + model pipeline with manual or automatic column detection."""
     if X_train is None or config is None:
         raise ValueError("X_train and config are required")
     
-    # Detect columns
-    num_cols, cat_cols = ColumnTypeDetector.detect_types(X_train, config)
+    num_cols, onehot_cat_cols, not_onehot_cat_cols = ColumnTypeDetector.detect_types(X_train, config)
     
-    logger.info(f"Building pipeline with {len(num_cols)} numeric and {len(cat_cols)} categorical columns")
+    logger.info(f"Building pipeline with {len(num_cols)} numeric columns")
     
     # Build transformers
     transformers = []
     
+    # Numerical transformer
     if num_cols:
         num_steps = []
         if config['preprocessing']['impute_missing']:
@@ -348,15 +377,51 @@ def build_pipeline(model_type, params=None, config=None, X_train=None):
         else:
             transformers.append(('num', Pipeline(num_steps), num_cols))
     
-    if cat_cols:
-        cat_transformer = Pipeline([
+    # One-hot categorical transformer
+    if onehot_cat_cols:
+        onehot_transformer = Pipeline([
             ('impute', SimpleImputer(strategy='constant', fill_value='unknown')),
             ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=True))
         ])
-        transformers.append(('cat', cat_transformer, cat_cols))
+        transformers.append(('onehot_cat', onehot_transformer, onehot_cat_cols))
+    
+    # Non-one-hot categorical transformer (for models that handle categorical natively)
+    if not_onehot_cat_cols:
+        # For models like CatBoost that handle categorical features natively
+        # We'll just impute missing values but not one-hot encode
+        not_onehot_transformer = Pipeline([
+            ('impute', SimpleImputer(strategy='constant', fill_value='unknown'))
+        ])
+        transformers.append(('not_onehot_cat', not_onehot_transformer, not_onehot_cat_cols))
     
     # Create model
     model = ModelFactory.create_model(model_type, params)
+    
+    # For CatBoost, specify categorical features
+    if model_type == 'catboost' and not_onehot_cat_cols:
+        # Get the indices of categorical features after preprocessing
+        # This is a bit complex since we need to account for the column transformer
+        cat_feature_indices = []
+        current_idx = 0
+        
+        # Count numerical features
+        if num_cols:
+            current_idx += len(num_cols)
+        
+        # Count one-hot encoded features (this will expand)
+        if onehot_cat_cols:
+            # We can't know exact count without fitting, so we'll handle this in a callback
+            # For now, we'll let CatBoost auto-detect
+            pass
+        
+        # The not-one-hot categorical features come last
+        if not_onehot_cat_cols:
+            for i in range(len(not_onehot_cat_cols)):
+                cat_feature_indices.append(current_idx + i)
+            
+            # Set categorical features for CatBoost
+            if hasattr(model, 'set_params'):
+                model.set_params(cat_features=cat_feature_indices)
     
     return Pipeline([
         ('preprocessor', ColumnTransformer(transformers)),
@@ -765,9 +830,8 @@ def main():
     
     # Print data info
     logger.info(f"Data prepared: {X_train.shape[0]} training samples, {X_test.shape[0]} test samples")
-    num_cols, cat_cols = ColumnTypeDetector.detect_types(X_train, config)
-    logger.info(f"Features: {len(num_cols)} numeric, {len(cat_cols)} categorical")
-    
+    num_cols, onehot_cat_cols, not_onehot_cat_cols = ColumnTypeDetector.detect_types(X_train, config)
+    logger.info(f"Building pipeline with {len(num_cols)} numeric columns, {len(onehot_cat_cols)} one-hot categorical columns, {len(not_onehot_cat_cols)} non-one-hot categorical columns")    
     # Train all models
     results = {}
     for model_type in config['models']:

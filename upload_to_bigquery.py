@@ -88,8 +88,8 @@ def generate_schema_from_parquet(parquet_file: str) -> List[bigquery.SchemaField
                     bq_type = 'FLOAT64'
             else:
                 bq_type = 'INT64'
-        elif is_bool_dtype(df[col]):        # <‑‑ add this block
-            bq_type = 'BOOL'                
+        elif is_bool_dtype(df[col]):
+            bq_type = 'BOOL'
         # Handle integer columns
         elif str(df[col].dtype) in ('int64', 'Int64'):
             bq_type = 'INT64'
@@ -188,23 +188,41 @@ def preprocess_time_columns(df: pd.DataFrame) -> pd.DataFrame:
     interval_cols = ["DepTimeBlk", "ArrTimeBlk"]
 
     timestamp_columns = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col])]
-
+    
+    # Process regular time columns
     for col in time_cols:
         if col in df.columns and col not in timestamp_columns:
             df[col] = df[col].fillna(0).astype(int)
-            df[f"{col}_Hour"] = df[col] // 100
-            df[f"{col}_Minute"] = df[col] % 100
+            
+            # Calculate minutes from midnight directly
+            total_col = f"{col}_Total"
+            df[total_col] = (df[col] // 100) * 60 + (df[col] % 100)
 
+    # Process interval columns
     for col in interval_cols:
         if col in df.columns and col not in timestamp_columns:
             parts = df[col].str.extract(r"(?P<start>\d{4})-(?P<end>\d{4})")
-            df[f"{col}_Hour_start"] = parts['start'].astype(int) // 100
-            df[f"{col}_Minute_start"] = parts['start'].astype(int) % 100
-            df[f"{col}_Hour_finish"] = parts['end'].astype(int) // 100
-            df[f"{col}_Minute_finish"] = parts['end'].astype(int) % 100
+            
+            # Calculate minutes from midnight directly for start and finish times
+            start_times = pd.to_numeric(parts['start'], errors='coerce')
+            end_times = pd.to_numeric(parts['end'], errors='coerce')
+            
+            # Convert to minutes from midnight
+            start_minutes = (start_times // 100) * 60 + (start_times % 100)
+            end_minutes = (end_times // 100) * 60 + (end_times % 100)
+            
+            df[f"{col}_start_Total"] = start_minutes
+            df[f"{col}_finish_Total"] = end_minutes
+            
+            # Calculate elapsed time in minutes
+            # Handle cases where end time is on the next day (e.g., 2300-0100)
+            df[f"{col}_Elapsed"] = end_minutes - start_minutes
+            # If elapsed time is negative, assume it spans midnight and add 24 hours (1440 minutes)
+            df.loc[df[f"{col}_Elapsed"] < 0, f"{col}_Elapsed"] = df.loc[df[f"{col}_Elapsed"] < 0, f"{col}_Elapsed"] + 1440
 
-    # Drop raw time/interval cols
+    # Drop raw time/interval columns
     to_drop = [c for c in time_cols + interval_cols if c in df.columns and c not in timestamp_columns]
+    
     df.drop(columns=to_drop, inplace=True)
     return df
 

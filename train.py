@@ -25,6 +25,8 @@ import mlflow.sklearn
 from urllib.parse import urlparse
 import uuid
 import argparse
+from contextlib import nullcontext
+import json
 
 # === CONFIGURATION ===
 SEED = 42
@@ -100,9 +102,9 @@ def build_pipeline(model_type, params=None, impute_missing=False):
     if model_type == 'xgboost':
         default_params = {
             'objective': 'binary:logistic',
-            'eval_metric': 'auc',
+            'eval_metric': 'error',
             'tree_method': 'hist',
-            'n_jobs': -1,
+            'n_jobs': 8,
             'random_state': SEED
         }
         if params:
@@ -112,8 +114,8 @@ def build_pipeline(model_type, params=None, impute_missing=False):
     elif model_type == 'lightgbm':
         default_params = {
             'objective': 'binary',
-            'metric': 'auc',
-            'n_jobs': -1,
+            'metric': 'binary_logloss',
+            'n_jobs': 8,
             'random_state': SEED,
             'verbose': -1
         }
@@ -124,8 +126,8 @@ def build_pipeline(model_type, params=None, impute_missing=False):
     elif model_type == 'catboost':
         default_params = {
             'loss_function': 'Logloss',
-            'eval_metric': 'AUC',
-            'thread_count': -1,
+            'eval_metric': 'Recall',
+            'thread_count': 8,
             'random_seed': SEED,
             'verbose': False
         }
@@ -199,7 +201,6 @@ def plot_feature_importance(model, model_type, out_file=None):
         plt.close()
     
     return imp_df
-
 
 def optimize_hyperparameters(X_train, y_train, model_type, config, cv=5):
     """Use Optuna to find optimal hyperparameters maximizing F-beta, with separate optimize and fixed params."""
@@ -298,10 +299,16 @@ def optimize_hyperparameters(X_train, y_train, model_type, config, cv=5):
         return np.mean(cv_results['test_score'])
 
     # Run study
+    storage = optuna.storages.RDBStorage(
+        url="sqlite:///optuna_study.db"
+    )
+
     study = optuna.create_study(
-        direction='maximize',
         study_name=f"{model_type}_optimization",
-        sampler=optuna.samplers.TPESampler(seed=SEED)
+        direction='maximize',
+        sampler=optuna.samplers.TPESampler(seed=SEED),
+        storage=storage,
+        load_if_exists=True
     )
     study.optimize(objective, n_trials=config['optimization']['n_trials'])
 
@@ -311,51 +318,116 @@ def optimize_hyperparameters(X_train, y_train, model_type, config, cv=5):
 
     print(f"Best {model_type} parameters: {best_params}")
     print(f"Best {model_type} F{beta}-score: {study.best_value:.4f}")
-    return best_params, study.best_value
+    run_name = generate_run_name(model_type)
+    results_dir = os.path.join("train_results", run_name)
+    os.makedirs(results_dir, exist_ok=True)
+    best_params_path = os.path.join(results_dir, "best_params.json")
+    with open(best_params_path, "w") as f:
+        json.dump(best_params, f, indent=2)
+    best_value = study.best_value
+    return best_params, best_value, results_dir
 
+def train_and_evaluate_model(X_train, X_test, y_train, y_test, model_type, best_params, config, results_dir=None):    
+    """
+    Train the specified model, evaluate on train and test sets, save results to 'train_results/<run_name>',
+    and log artifacts to MLflow if enabled.
+    Returns the trained pipeline and test metrics.
+    """
 
+    # Ensure the root results directory exists
+    os.makedirs("train_results", exist_ok=True)
 
-
-def train_and_evaluate_model(X_train, X_test, y_train, y_test, model_type, best_params, config):
     impute_missing = config['preprocessing']['impute_missing']
     beta = config['optimization'].get('beta', 1.0)
-    # MLflow setup unchanged
+
+    # Check MLflow availability
     mlflow_available = True
     try:
         mlflow.get_experiment_by_name(config['mlflow']['experiment_name'])
     except Exception:
         mlflow_available = False
         print(f"Warning: MLflow is not available. Training {model_type} without tracking.")
+
     try:
+        # Create a run name if not provided through results_dir
+        if results_dir is None:
+            if mlflow_available:
+                run_name = generate_run_name(model_type)
+            else:
+                run_name = f"no_mlflow_{model_type}"
+            # results_dir is already created and passed in
+        else:
+            # Extract run_name from results_dir
+            run_name = os.path.basename(results_dir)
+
+        # Start MLflow run if available
         if mlflow_available:
-            run_name = generate_run_name(model_type)
             mlflow_run = mlflow.start_run(run_name=run_name)
         else:
-            from contextlib import nullcontext
             mlflow_run = nullcontext()
+
         with mlflow_run:
+            # Build pipeline and set class balancing
             pipeline = build_pipeline(model_type, best_params, impute_missing)
-            # class balancing
             counts = y_train.value_counts()
-            class_ratio = counts.loc[0] / counts.loc[1] if 0 in counts.index and 1 in counts.index else 1.0
+            class_ratio = (counts.loc[0] / counts.loc[1]) if (0 in counts.index and 1 in counts.index) else 1.0
             if model_type == 'xgboost':
                 pipeline.named_steps['model'].set_params(scale_pos_weight=class_ratio)
             elif model_type == 'lightgbm':
                 pipeline.named_steps['model'].set_params(class_weight='balanced')
             elif model_type == 'catboost':
                 pipeline.named_steps['model'].set_params(auto_class_weights='Balanced')
-            # training
+
+            # Train
             print(f"Training {model_type}...")
             start = time.time()
             pipeline.fit(X_train, y_train)
             duration = time.time() - start
             print(f"Done in {duration:.2f}s")
-            # metrics
+
+            # Evaluate
             y_train_p = pipeline.predict_proba(X_train)[:, 1]
             train_metrics = evaluate(y_train, y_train_p, beta=beta)
             y_test_p = pipeline.predict_proba(X_test)[:, 1]
             test_metrics = evaluate(y_test, y_test_p, beta=beta)
-            print(f"{model_type} Test Metrics: F1={test_metrics['f1']:.4f}, F{beta}={test_metrics['fbeta']:.4f}, ROC_AUC={test_metrics['roc_auc']:.4f}")
+            print(
+                f"{model_type} Test Metrics: "
+                f"F1={test_metrics['f1']:.4f}, "
+                f"F{beta}={test_metrics['fbeta']:.4f}, "
+                f"ROC_AUC={test_metrics['roc_auc']:.4f}"
+            )
+
+            # Create subdirectory for this run
+            results_dir = os.path.join("train_results", run_name)
+            os.makedirs(results_dir, exist_ok=True)
+
+            # Save best parameters to JSON
+            best_params_path = os.path.join(results_dir, "best_params.json")
+            with open(best_params_path, "w") as f:
+                json.dump(best_params, f, indent=2)
+            if mlflow_available:
+                mlflow.log_artifact(best_params_path)
+
+            # Save confusion matrix
+            cm = test_metrics['confusion_matrix']
+            cm_path = os.path.join(results_dir, "confusion_matrix.txt")
+            with open(cm_path, 'w') as f:
+                f.write(f"TN:{cm[0][0]}, FP:{cm[0][1]}\n")
+                f.write(f"FN:{cm[1][0]}, TP:{cm[1][1]}")
+            if mlflow_available:
+                mlflow.log_artifact(cm_path)
+
+            # Save feature importance
+            fi_path = os.path.join(results_dir, "feature_importance.png")
+            fi_df = plot_feature_importance(pipeline.named_steps['model'], model_type, fi_path)
+            if fi_df is not None:
+                csv_path = os.path.join(results_dir, "feature_importance.csv")
+                fi_df.to_csv(csv_path, index=False)
+                if mlflow_available:
+                    mlflow.log_artifact(fi_path)
+                    mlflow.log_artifact(csv_path)
+
+            # Log parameters and metrics to MLflow
             if mlflow_available:
                 mlflow.log_params({
                     'model': model_type,
@@ -364,24 +436,15 @@ def train_and_evaluate_model(X_train, X_test, y_train, y_test, model_type, best_
                     **best_params
                 })
                 mlflow.log_metrics({k: v for k, v in test_metrics.items() if isinstance(v, float)})
-                # artifacts unchanged
-                cm = test_metrics['confusion_matrix']
-                cm_file = f"{run_name}_cm.txt"
-                with open(cm_file, 'w') as f:
-                    f.write(f"TN:{cm[0][0]}, FP:{cm[0][1]}\nFN:{cm[1][0]}, TP:{cm[1][1]}")
-                mlflow.log_artifact(cm_file)
-                fi_file = f"{run_name}_fi.png"
-                fi_df = plot_feature_importance(pipeline.named_steps['model'], model_type, fi_file)
-                if fi_df is not None:
-                    csv_file = f"{run_name}_fi.csv"
-                    fi_df.to_csv(csv_file, index=False)
-                    mlflow.log_artifact(fi_file)
-                    mlflow.log_artifact(csv_file)
+
+                # Log model
                 mlflow.sklearn.log_model(pipeline, run_name)
                 print(f"Logged run '{run_name}' to MLflow.")
             else:
-                print("Artifacts saved locally.")
+                print(f"Artifacts saved locally in '{results_dir}'.")
+
             return pipeline, test_metrics
+
     except Exception as e:
         print(f"Error during training {model_type}: {e}")
         return None, None
@@ -432,17 +495,21 @@ def main():
     results = {}
     for model in config['models']:
         print(f"--- {model} ---")
-        best_params, _ = optimize_hyperparameters(
+        best_params, _, results_dir = optimize_hyperparameters(
             X_train, y_train, model, config,
             cv=config['optimization']['cv_folds']
         )
+        # Create a dedicated directory for this run
+        run_name = generate_run_name(model)
+        results_dir = os.path.join("train_results", run_name)
+        os.makedirs(results_dir, exist_ok=True)
+        
         _, metrics = train_and_evaluate_model(
             X_train, X_test, y_train, y_test,
-            model, best_params, config
+            model, best_params, config, results_dir
         )
         if metrics:
             results[model] = metrics
-
     beta = config['optimization'].get('beta', 1.0)
     best = max(results, key=lambda m: results[m]['fbeta'])
     print(f"Best model: {best} with F{beta}={results[best]['fbeta']:.4f}")

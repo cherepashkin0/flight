@@ -1,7 +1,10 @@
 import os
 import polars as pl
 from google.cloud import bigquery
+import datetime
+from pathlib import Path
 
+tdy = datetime.today().strftime('%Y-%m-%d')
 def analyze_bigquery_table(
     table_id: str,
     project: str = None,
@@ -18,8 +21,9 @@ def analyze_bigquery_table(
     """
     if output_path is None:
         table_name = table_id.split('.')[-1]
-        output_path = f"{table_name}_analysis.csv"
-    
+        output_path = os.path.join('results', tdy, table_name + '_analysis.csv')
+        Path(output_path).mkdir(exist_ok=True, parents=True)
+
     # Initialize client
     bq_client = bigquery.Client(project=project)
     
