@@ -15,29 +15,35 @@ pd.set_option('display.max_rows', None)
 import lightgbm as lgb
 from sklearn.metrics import f1_score
 import optuna
+import IPython
 
 
 project_id = os.environ.get('GCP_PROJECT_ID')
-table_id = f'{project_id}.flights.flights_all'
+table_name = 'combined_flights'
+dataset_name = 'flight_data'
+table_id = f'{project_id}.{dataset_name}.{table_name}'
 SAMPLE_SIZE = 100_000
+PHIK_TARGET_HIGH_CORR = 0.85
+PHIK_PAIR_HIGH_CORR = 0.9
 
-def load_all_columns():
-    client = bigquery.Client(project=project_id)
-    query = f"""
-                SELECT column_name
-                FROM `{project_id}.flights.INFORMATION_SCHEMA.COLUMNS`
-                WHERE table_name = 'flights_all';
-            """
-    df = client.query(query).to_dataframe(create_bqstorage_client=True)
-    lst = [name[0] for name in df.values]
-    return lst
+
+# def load_all_columns():
+#     client = bigquery.Client(project=project_id)
+#     query = f"""
+#                 SELECT column_name
+#                 FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.COLUMNS`
+#                 WHERE table_name = {table_name};
+#             """
+#     df = client.query(query).to_dataframe(create_bqstorage_client=True)
+#     lst = [name[0] for name in df.values]
+#     return lst
 
 def plots2pdf(plots, fname):
     with PdfPages(fname) as pp:
         for plot in plots:
            pp.savefig(plot.figure)
 
-def histogram_create(dct_cols):
+def histogram_create(describe_df, dct_cols):
     print(describe_df['Role'].value_counts())
     client = bigquery.Client(project=project_id)
     
@@ -89,8 +95,11 @@ def drop_skip_cols(df, skip_cols, dct_cols):
         filtered_dct_cols[key] = [col for col in cols if col not in skip_cols]
     return df, filtered_dct_cols
 
-def phik_create_matrix(X_train, y_train, dct_cols):
-    skip_cols = describe_df.loc[describe_df['Skip_reason_phik'].notna(), 'Column_Name'].tolist()
+def phik_create_matrix(X_train, y_train, dct_cols, describe_df):
+    skip_cols = describe_df.loc[
+        (describe_df['Skip_reason_phik'].notna()) & (describe_df['Skip_reason_phik'] != 'unk'),
+        'Column_Name'
+    ].tolist()
     df = pd.concat([X_train.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
     # print(89, 'df columns', df.columns)
     df[['Cancelled', 'Diverted']] = df[['Cancelled', 'Diverted']].astype('Int8')
@@ -101,24 +110,32 @@ def phik_create_matrix(X_train, y_train, dct_cols):
     cat_cols = filtered_dct_cols['cat'] + filtered_dct_cols['hot']
     df[cat_cols] = df[cat_cols].astype('category')
     phik_corr = phik_matrix(df, interval_cols=filtered_dct_cols['num'], dropna=True, verbose=1)
-    phik_long = phik_corr.stack().reset_index()
-    phik_long.columns = ['column_a', 'column_b', 'value']
-    phik_long = phik_long[phik_long['column_a'] != phik_long['column_b']]
-    phik_long['min_col'] = phik_long[['column_a', 'column_b']].min(axis=1)
-    phik_long['max_col'] = phik_long[['column_a', 'column_b']].max(axis=1)
-    phik_long_unique = phik_long[['min_col', 'max_col', 'value']].drop_duplicates()
-    phik_long_unique.columns = ['column_a', 'column_b', 'value']
+    cancelled_corr = phik_corr['Cancelled'].dropna().copy()
+    cancelled_corr = cancelled_corr[cancelled_corr.index != 'Cancelled']
+    high_corr = cancelled_corr[abs(cancelled_corr) > PHIK_TARGET_HIGH_CORR].sort_values(ascending=False)
+    high_corr_dict = {col: 'true' for col in high_corr}
+    describe_df['Phik_high_target'] = describe_df['Column_Name'].map(high_corr_dict).fillna('unk')
     phik_corr.to_csv(os.path.join(today_dir, 'phik_matrix.csv'))
-    phik_long_unique.to_csv(os.path.join(today_dir, 'phik_long.csv'), index=False)
+
+    # phik_long = phik_corr.stack().reset_index()
+    # phik_long.columns = ['column_a', 'column_b', 'value']
+    # phik_long = phik_long[phik_long['column_a'] != phik_long['column_b']]
+    # phik_long['min_col'] = phik_long[['column_a', 'column_b']].min(axis=1)
+    # phik_long['max_col'] = phik_long[['column_a', 'column_b']].max(axis=1)
+    # phik_long_unique = phik_long[['min_col', 'max_col', 'value']].drop_duplicates()
+    # phik_long_unique.columns = ['column_a', 'column_b', 'value']
+    # phik_long_unique.sort_values('value', ascending=False).to_csv(os.path.join(today_dir, 'phik_long.csv'), index=False)
 
 def f1_eval(y_pred, dataset):
     y_true = dataset.get_label()
     y_pred_binary = (y_pred > 0.5).astype(int)
     return 'f1', f1_score(y_true, y_pred_binary), True
 
-def train(X_train, X_test, y_train, y_test, dct_cols):
+def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
     skip_cols = describe_df.loc[
-        (describe_df['Skip_reason_phik'].notna()) | (describe_df['Phik_high_target'].notna()) | (describe_df['Data_leakage'].notna()),
+        (describe_df['Skip_reason_phik'] != 'unk') |
+        (describe_df['Phik_high_target'] != 'unk') |
+        (describe_df['Data_leakage'] != 'unk'),
         'Column_Name'
     ].tolist()
     X_train, filtered_dct_cols = drop_skip_cols(X_train, skip_cols, dct_cols)
@@ -203,17 +220,17 @@ def train(X_train, X_test, y_train, y_test, dct_cols):
 
 
 def main():
+    describe_df = pd.read_csv('results/flights_all_analysis_with_roles.csv')
     dct_cols = {}
     for key in ['num', 'cat', 'hot', 'tgt', 'dat']:
         dct_cols[key] = describe_df.loc[describe_df['Role'] == key, 'Column_Name'].sort_values().tolist()   
-    # histogram_create(dct_cols)
+    histogram_create(describe_df, dct_cols)
     X_train, X_test, y_train, y_test = train_test_split_create(dct_cols)
-    # phik_create_matrix(X_train, y_train, dct_cols)
-    train(X_train, X_test, y_train, y_test, dct_cols)
+    phik_create_matrix(X_train, y_train, dct_cols, describe_df)
+    train(X_train, X_test, y_train, y_test, dct_cols, describe_df)
 
 if __name__ == "__main__":
     today_date = datetime.today().strftime('%Y-%m-%d')
     today_dir = os.path.join('results', today_date)
     Path(today_dir).mkdir(exist_ok=True, parents=True)
-    describe_df = pd.read_csv('results/flights_all_analysis.csv')
     main()
