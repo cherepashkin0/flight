@@ -26,18 +26,6 @@ SAMPLE_SIZE = 100_000
 PHIK_TARGET_HIGH_CORR = 0.85
 PHIK_PAIR_HIGH_CORR = 0.9
 
-
-# def load_all_columns():
-#     client = bigquery.Client(project=project_id)
-#     query = f"""
-#                 SELECT column_name
-#                 FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.COLUMNS`
-#                 WHERE table_name = {table_name};
-#             """
-#     df = client.query(query).to_dataframe(create_bqstorage_client=True)
-#     lst = [name[0] for name in df.values]
-#     return lst
-
 def plots2pdf(plots, fname):
     with PdfPages(fname) as pp:
         for plot in plots:
@@ -85,6 +73,10 @@ def train_test_split_create(dct_cols):
     X_test = df.drop(columns=['Cancelled']).iloc[test_idx]
     y_train = df[['Cancelled']].iloc[train_idx]
     y_test = df[['Cancelled']].iloc[test_idx]
+    y_train['Cancelled'] = y_train['Cancelled'].astype('Int8')
+    y_test['Cancelled'] = y_test['Cancelled'].astype('Int8')
+    # print("Unique y_train values:", y_train['Cancelled'].unique())
+    print("Value counts:\n", y_train['Cancelled'].value_counts())
     return X_train, X_test, y_train, y_test
 
 def drop_skip_cols(df, skip_cols, dct_cols):
@@ -138,6 +130,9 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
         (describe_df['Data_leakage'] != 'unk'),
         'Column_Name'
     ].tolist()
+    skip_cols = list(set(skip_cols + 
+    ['ArrDelay', 'ArrDelayMinutes', 'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__']))
+    
     X_train, filtered_dct_cols = drop_skip_cols(X_train, skip_cols, dct_cols)
     X_test, filtered_dct_cols = drop_skip_cols(X_test, skip_cols, dct_cols)
     cat_cols = filtered_dct_cols['cat'] + filtered_dct_cols['hot']
@@ -159,10 +154,12 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
     # print("Number of non-null values:\n", X_train.notnull().sum())
     # print("Unique values per categorical column:\n", X_train[cat_cols].nunique())
 
-    train_data = lgb.Dataset(X_train,
+    train_data = lgb.Dataset(X_train[filtered_dct_cols['num']],
                              label=y_train.squeeze(),
-                             feature_name=filtered_dct_cols['num'] + cat_cols,
-                             categorical_feature=cat_cols)
+                            #  feature_name=filtered_dct_cols['num'] + cat_cols,
+                             feature_name=filtered_dct_cols['num'])
+                            #  ,
+                            #  categorical_feature=cat_cols)
 
     def objective(trial):
         classifier_name = trial.suggest_categorical('classifier', ['lightgbm'])
@@ -170,6 +167,7 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
             param = {
                 'objective': 'binary',
                 'metric': 'binary_logloss',
+                # 'metric': 'auc',                
                 'boosting_type': 'gbdt',
                 'num_leaves': trial.suggest_int('lightgbm_num_leaves', 2, 15, log=True),
                 'min_data_in_leaf': 1,        
@@ -182,14 +180,43 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
                 'lambda_l1': 0.1, 
                 'lambda_l2': 0.1,
                 'scale_pos_weight': pos_weight,
-                'verbosity': 1,
+                'verbosity': -1,
                 'seed': 42
             }
-            cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, feval=f1_eval, stratified=True, seed=42, return_cvbooster=False)
+            cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, stratified=True, seed=42, return_cvbooster=False, feval=f1_eval)
+            # feval=f1_eval,
+            # print("Available cv keys:", list(cv_results.keys()))
+            # result_metric = np.mean(cv_results['valid auc-mean'])
             result_metric = np.mean(cv_results['valid f1-mean'])
         return result_metric
     study = optuna.create_study()
-    study.optimize(objective, n_trials=10)
+    study.optimize(objective, n_trials=5)
+
+    best_params = study.best_params
+    best_params.update({
+        'objective': 'binary',
+        'metric': 'binary_logloss',
+        'boosting_type': 'gbdt',
+        'scale_pos_weight': pos_weight,
+        'verbosity': -1,
+        'seed': 42
+    })
+
+    print('Final columns used in the final model:', filtered_dct_cols['num'])
+    final_train_data = lgb.Dataset(X_train[filtered_dct_cols['num']], label=y_train.squeeze())
+
+    final_model = lgb.train(
+        best_params,
+        final_train_data,
+        num_boost_round=100,
+        feval=f1_eval
+    )
+
+    model_path = os.path.join(today_dir, 'lightgbm_model.lgb')
+    final_model.save_model(model_path)
+    print(f"Model saved to {model_path}")
+
+
     # num_round = 10
     # tmp_cols = filtered_dct_cols['num'][:5] + cat_cols[:3]
     # tmp_train = lgb.Dataset(X_train[tmp_cols], label=y_train.squeeze(),
