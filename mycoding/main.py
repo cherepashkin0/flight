@@ -6,16 +6,16 @@ from datetime import datetime
 from matplotlib import pyplot as plt
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from phik import phik_matrix
 import numpy as np
 from pathlib import Path
 pd.options.display.max_rows = None
 pd.set_option('display.max_rows', None)
 import lightgbm as lgb
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, fbeta_score, precision_recall_curve, auc, make_scorer
 import optuna
-import IPython
+import IPython 
 
 
 project_id = os.environ.get('GCP_PROJECT_ID')
@@ -118,10 +118,22 @@ def phik_create_matrix(X_train, y_train, dct_cols, describe_df):
     # phik_long_unique.columns = ['column_a', 'column_b', 'value']
     # phik_long_unique.sort_values('value', ascending=False).to_csv(os.path.join(today_dir, 'phik_long.csv'), index=False)
 
-def f1_eval(y_pred, dataset):
+def fbeta_eval_lgb(y_pred, dataset):
     y_true = dataset.get_label()
     y_pred_binary = (y_pred > 0.5).astype(int)
-    return 'f1', f1_score(y_true, y_pred_binary), True
+    return 'fbeta', fbeta_score(y_true, y_pred_binary, beta=1.0), True
+
+def pr_auc(y_true, y_proba, needs_proba):
+    precision, recall, _ = precision_recall_curve(y_true, y_proba, pos_label=1)
+    return auc(recall, precision)
+
+def fbeta_eval(y_true, y_proba, needs_proba, beta=2.0):
+    y_pred = (y_proba > 0.5).astype(int)
+    return fbeta_score(y_true, y_pred, beta=beta, pos_label=1)
+
+def fbeta_scorer(y_true, y_proba, needs_proba):
+    y_pred = (y_proba > 0.5).astype(int)
+    return fbeta_score(y_true, y_pred, beta=2.0, pos_label=1)
 
 def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
     skip_cols = describe_df.loc[
@@ -183,12 +195,17 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
                 'verbosity': -1,
                 'seed': 42
             }
-            cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, stratified=True, seed=42, return_cvbooster=False, feval=f1_eval)
+            # cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, stratified=True, seed=42, return_cvbooster=False, feval=f1_eval)
+            model = lgb.LGBMClassifier(**param)
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), cv=cv, scoring=make_scorer(pr_auc, needs_proba=True)).mean()
+            # result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), 
+                                    #  cv=cv, scoring=make_scorer(fbeta_scorer, needs_proba=True)).mean()
             # feval=f1_eval,
             # print("Available cv keys:", list(cv_results.keys()))
-            # result_metric = np.mean(cv_results['valid auc-mean'])
-            result_metric = np.mean(cv_results['valid f1-mean'])
-        return result_metric
+            # result_metric = np.mean(cv_results['valid auc-mefbeta_scoreran'])
+            # result_metric = np.mean(cv_results['valid f1-mean'])
+        return result
     study = optuna.create_study()
     study.optimize(objective, n_trials=5)
 
@@ -209,7 +226,7 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
         best_params,
         final_train_data,
         num_boost_round=100,
-        feval=f1_eval
+        feval=fbeta_eval_lgb
     )
 
     model_path = os.path.join(today_dir, 'lightgbm_model.lgb')
@@ -244,6 +261,8 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
     # fig, ax = plt.subplots(1, 1, figsize=(12, 12))
     # lgb.plot_importance(final_model, max_num_features=20, ax=ax)
     # fig.savefig(os.path.join(today_dir, 'feautre_importance_final.png'))
+
+
 
 
 def main():
