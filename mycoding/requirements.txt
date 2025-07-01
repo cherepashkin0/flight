@@ -1,0 +1,16 @@
+pandas
+pyarrow
+google-cloud-bigquery
+matplotlib
+seaborn
+scikit-learn
+phik
+scipy==1.9.3
+lightgbm
+optuna
+polars
+db-dtypes
+google-cloud-bigquery-storage
+IPython
+fastapi[all]
+uvicorn
