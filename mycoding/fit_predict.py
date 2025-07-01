@@ -5,16 +5,19 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 import pandas as pd
 import lightgbm as lgb
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report
+from sklearn.metrics import recall_score, fbeta_score, precision_recall_curve, auc, make_scorer, classification_report
 from sklearn.impute import SimpleImputer
 from google.cloud import bigquery
+import optuna
 import os
+# from sklearn import set_config
+# set_config(transform_output='pandas')
 
-SAMPLE_SIZE = 1_000_000
+SAMPLE_SIZE = 100_000
 project_id = os.environ.get('GCP_PROJECT_ID')
 table_name = 'combined_flights'
 dataset_name = 'flight_data'
@@ -77,7 +80,7 @@ def ffit():
     # Preprocessing for categorical features
     categorical_transformer = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='constant', fill_value=np.nan)),
-        ('encoder', OneHotEncoder(handle_unknown='ignore'))
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
     ])
 
     # Combine preprocessing
@@ -87,38 +90,54 @@ def ffit():
             ('cat', categorical_transformer, categorical_features)
         ]
     )
-
-    # LightGBM classifier
-    param = {
-        'objective': 'binary',
-        'metric': 'binary_logloss',
-        # 'metric': 'auc',                
-        'boosting_type': 'gbdt',
-        'num_leaves': 20,
-        'min_data_in_leaf': 1,        
-        'min_gain_to_split': 0.0001,  
-        'max_depth': 200, 
-        'learning_rate': 1e-2,
-        'feature_fraction': 0.8,
-        'bagging_fraction': 0.8, 
-        'bagging_freq': 5,
-        'lambda_l1': 0.1, 
-        'lambda_l2': 0.1,
-        # 'scale_pos_weight': pos_weight,
-        'verbosity': -1,
-        'seed': 42
-    }
-    model = lgb.LGBMClassifier(**param)
-
-    pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', model)
-    ])
-
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
-    pipeline.fit(X_train, y_train)
 
-    # Evaluate
+    def objective(trial):
+        classifier_name = trial.suggest_categorical('classifier', ['lightgbm'])
+        if classifier_name == 'lightgbm':
+            param = {
+                'objective': 'binary',
+                'metric': 'binary_logloss',             
+                'boosting_type': 'gbdt',
+                'num_leaves': trial.suggest_int('lightgbm_num_leaves', 2, 32, log=True),
+                'max_depth': trial.suggest_int('lightgbm_max_depth', 3, 12),
+                'learning_rate': trial.suggest_float('lightgbm_learning_rate', 1e-4, 1e-1, log=True),
+                'feature_fraction': trial.suggest_float('lightgbm_feature_fraction', 0.6, 1.0),
+                'bagging_fraction': trial.suggest_float('lightgbm_bagging_fraction', 0.6, 1.0),
+                'bagging_freq': trial.suggest_int('lightgbm_bagging_freq', 1, 10),
+                'lambda_l1': trial.suggest_float('lightgbm_lambda_l1', 1e-5, 10.0, log=True),
+                'lambda_l2': trial.suggest_float('lightgbm_lambda_l2', 1e-5, 10.0, log=True),
+                'verbosity': -1,
+                'seed': 42
+            }
+            model = lgb.LGBMClassifier(**param)
+            pipeline = Pipeline(steps=[
+                        ('preprocessor', preprocessor),
+                        ('classifier', model)
+                        ])
+
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            fbeta_scorer = make_scorer(fbeta_score, beta=2.0)
+            result = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring=fbeta_scorer).mean()
+            # result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), 
+                                    #  cv=cv, scoring=make_scorer(fbeta_scorer, needs_proba=True)).mean()
+            print('user_attrs', trial.user_attrs)
+            # print(f"Mean F2: {trial.user_attrs['mean_f2']:.4f} ± {trial.user_attrs['std_f2']:.4f}")                                
+        return result
+    try:
+        study = optuna.load_study(study_name="my_study", storage="sqlite:///my_study.db")
+    except:
+        study = optuna.create_study(study_name="my_study", storage="sqlite:///my_study.db", direction="maximize")
+    
+    study.optimize(objective, n_trials=50)
+
+    best_params = study.best_params
+    final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
+    pipeline = Pipeline(steps=[
+                ('preprocessor', preprocessor),
+                ('classifier', final_model)
+                ])
+    pipeline.fit(X_train, y_train)
     y_pred = pipeline.predict(X_test)
     print(classification_report(y_test, y_pred))
 
