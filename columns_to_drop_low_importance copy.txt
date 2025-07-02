@@ -1,9 +1,0 @@
-ArrTimeBlk_finish_Total
-ArrTimeBlk_Elapsed
-DepTimeBlk_finish_Total
-DepTimeBlk_Elapsed
-ArrTimeBlk_start_Total
-OriginAirportSeqID
-DistanceGroup
-DepTimeBlk_start_Total
-Marketing_Airline_Network

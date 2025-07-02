@@ -14,3 +14,4 @@ google-cloud-bigquery-storage
 IPython
 fastapi[all]
 uvicorn
+mlflow

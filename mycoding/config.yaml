@@ -1,0 +1,34 @@
+project:
+  dataset: flight_data
+  table: combined_flights
+  sample_size: 100000
+
+optuna:
+  study_name: my_study2
+  storage: sqlite:///my_study2.db
+  n_trials: 2
+
+mlflow:
+  experiment_name: flight_cancellation_prediction
+  model_name: flight_cancellation_model
+
+data:
+  describe_csv_path: results/flights_all_analysis_with_roles.csv
+  roles_output_path: training_taken_roles.json
+
+columns:
+  target: Cancelled
+  skip_additional:
+    - DivAirportLandings
+    - DepartureDelayGroups
+    - AirTime
+    - ArrivalDelayGroups
+    - ArrDelay
+    - ArrDelayMinutes
+    - DepDelay
+    - DepDelayMinutes
+    - ActualElapsedTime
+    - TaxiOut
+    - TaxiIn
+    - Diverted
+    - __index_level_0__
