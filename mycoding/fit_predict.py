@@ -16,6 +16,11 @@ import optuna
 import os
 import mlflow
 import matplotlib.pyplot as plt
+import xgboost as xgb
+from catboost import CatBoostClassifier
+import mlflow.lightgbm
+import mlflow.xgboost
+import mlflow.catboost
 
 # from sklearn import set_config
 # set_config(transform_output='pandas')
@@ -27,6 +32,7 @@ dataset_name = 'flight_data'
 table_id = f'{project_id}.{dataset_name}.{table_name}'
 describe_df = pd.read_csv('results/flights_all_analysis_with_roles.csv')
 scaler = StandardScaler()
+
 
 def get_col_roles():
     dct_cols = {}
@@ -83,7 +89,15 @@ def drop_skip_cols(skip_cols, dct_cols):
 #             X_filled[col] = X_filled[col].fillna(self.fill_value)
 
 #         return X_filled
-    
+
+def remove_prefix_param(best_params, prefix):
+    parameters = {
+            key.replace(prefix+'_', ''): value
+            for key, value in best_params.items()
+            if key.startswith(prefix+'_')
+                }
+    return parameters
+
 def ffit():
     mlflow.set_experiment("flight_cancellation_prediction")    
     target_col = 'Cancelled'
@@ -124,7 +138,8 @@ def ffit():
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
     def objective(trial):
-        classifier_name = trial.suggest_categorical('classifier', ['lightgbm'])
+        classifier_name = trial.suggest_categorical('classifier', ['lightgbm', 'xgboost', 'catboost'])
+
         if classifier_name == 'lightgbm':
             param = {
                 'objective': 'binary',
@@ -141,52 +156,123 @@ def ffit():
                 'verbosity': -1,
                 'seed': 42
             }
+            model = lgb.LGBMClassifier(**param)
 
-            cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=42)
-            scores = []
+        elif classifier_name == 'xgboost':
+            import xgboost as xgb
+            param = {
+                'objective': 'binary:logistic',
+                'eval_metric': 'logloss',
+                'booster': 'gbtree',
+                'eta': trial.suggest_float('xgboost_eta', 1e-4, 1e-1, log=True),
+                'max_depth': trial.suggest_int('xgboost_max_depth', 3, 12),
+                'subsample': trial.suggest_float('xgboost_subsample', 0.5, 1.0),
+                'colsample_bytree': trial.suggest_float('xgboost_colsample_bytree', 0.5, 1.0),
+                'lambda': trial.suggest_float('xgboost_lambda', 1e-5, 10.0, log=True),
+                'alpha': trial.suggest_float('xgboost_alpha', 1e-5, 10.0, log=True),
+                'use_label_encoder': False
+            }
+            model = xgb.XGBClassifier(**param, tree_method="hist", random_state=42)
 
-            for train_idx, val_idx in cv.split(X_train, y_train):
-                X_tr, X_val = X_train.iloc[train_idx].copy(), X_train.iloc[val_idx].copy()
-                y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+        elif classifier_name == 'catboost':
+            from catboost import CatBoostClassifier
+            param = {
+                'iterations': 500,
+                'learning_rate': trial.suggest_float('catboost_learning_rate', 1e-3, 1e-1, log=True),
+                'depth': trial.suggest_int('catboost_depth', 3, 10),
+                'l2_leaf_reg': trial.suggest_float('catboost_l2_leaf_reg', 1e-2, 10.0, log=True),
+                'random_strength': trial.suggest_float('catboost_random_strength', 0.1, 10.0),
+                'loss_function': 'Logloss',
+                'verbose': False,
+                'random_seed': 42
+            }
+            model = CatBoostClassifier(**param)
 
-                # Scale numeric columns
-                X_tr[numeric_features] = scaler.fit_transform(X_tr[numeric_features])
-                X_val[numeric_features] = scaler.transform(X_val[numeric_features])
+        cv = StratifiedKFold(n_splits=2, shuffle=True, random_state=42)
+        scores = []
 
-                model = lgb.LGBMClassifier(**param)
+        for train_idx, val_idx in cv.split(X_train, y_train):
+            X_tr, X_val = X_train.iloc[train_idx].copy(), X_train.iloc[val_idx].copy()
+            y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+            # Scale numeric columns
+            X_tr[numeric_features] = scaler.fit_transform(X_tr[numeric_features])
+            X_val[numeric_features] = scaler.transform(X_val[numeric_features])
+
+            if classifier_name == 'xgboost':
+                # Convert categoricals to strings for LabelEncoder or use pd.get_dummies
+                X_tr = pd.get_dummies(X_tr, columns=categorical_features)
+                X_val = pd.get_dummies(X_val, columns=categorical_features)
+                # Align columns
+                X_tr, X_val = X_tr.align(X_val, join='left', axis=1, fill_value=0)
+                model.fit(X_tr, y_tr)
+
+            elif classifier_name == 'catboost':
+                # Ensure categorical columns are strings
+                for col in categorical_features:
+                    X_tr[col] = X_tr[col].astype(str)
+                    X_val[col] = X_val[col].astype(str)
+                model.fit(X_tr, y_tr, cat_features=categorical_features, eval_set=(X_val, y_val), verbose=False)
+
+            elif classifier_name == 'lightgbm':  # lightgbm
                 model.fit(X_tr, y_tr, categorical_feature=categorical_features)
 
-                y_pred = model.predict(X_val)
-                score = fbeta_score(y_val, y_pred, beta=2.0)
-                scores.append(score)
+            y_pred = model.predict(X_val)
+
+            score = fbeta_score(y_val, y_pred, beta=2.0)
+            scores.append(score)
+
         return np.mean(scores)
+
     try:
-        study = optuna.load_study(study_name="my_study", storage="sqlite:///my_study.db")
+        study = optuna.load_study(study_name="my_study2", storage="sqlite:///my_study2.db")
     except:
-        study = optuna.create_study(study_name="my_study", storage="sqlite:///my_study.db", direction="maximize")
+        study = optuna.create_study(study_name="my_study2", storage="sqlite:///my_study2.db", direction="maximize")
     
-    study.optimize(objective, n_trials=50)
+    study.optimize(objective, n_trials=2)
+    return study, X_train, X_test, y_train, y_test, categorical_features, numeric_features
 
+
+def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features, numeric_features):
     best_params = study.best_params
-    # Scale numeric features
-    X_train[numeric_features] = scaler.fit_transform(X_train[numeric_features])
-    X_test[numeric_features] = scaler.transform(X_test[numeric_features])
+    print(best_params)
+    best_model_type = best_params.pop('classifier')
 
-    # Train final model
-    final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
-    final_model.fit(X_train, y_train, categorical_feature=categorical_features)
+    if best_model_type == 'lightgbm':
+        lightgbm_params = remove_prefix_param(best_params, best_model_type)
 
-    y_pred = final_model.predict(X_test)
-    y_proba = final_model.predict_proba(X_test)[:, 1]
+        final_model = lgb.LGBMClassifier(**lightgbm_params, objective='binary', random_state=42)
+        final_model.fit(X_train, y_train, categorical_feature=categorical_features)
 
+    elif best_model_type == 'xgboost':
+        xgboost_params = remove_prefix_param(best_params, best_model_type)
 
-    # final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
-    # pipeline = Pipeline(steps=[
-    #             ('preprocessor', preprocessor),
-    #             ('classifier', final_model)
-    #             ])
-    # pipeline.fit(X_train, y_train, categorical_feature=categorical_features)
-    # y_pred = pipeline.predict(X_test)
+        X_train_encoded = pd.get_dummies(X_train, columns=categorical_features)
+        X_test_encoded = pd.get_dummies(X_test, columns=categorical_features)
+        X_train_encoded, X_test_encoded = X_train_encoded.align(X_test_encoded, join='left', axis=1, fill_value=0)
+
+        final_model = xgb.XGBClassifier(**xgboost_params, random_state=42, tree_method="hist")
+        final_model.fit(X_train_encoded, y_train)
+        X_test = X_test_encoded  # Обновляем X_test для предсказаний
+
+    elif best_model_type == 'catboost':
+        catboost_params = remove_prefix_param(best_params, best_model_type)
+
+        for col in categorical_features:
+            X_train[col] = X_train[col].astype(str)
+            X_test[col] = X_test[col].astype(str)
+
+        final_model = CatBoostClassifier(
+            **catboost_params,
+            loss_function="Logloss",
+            random_seed=42,
+            verbose=False
+        )
+        final_model.fit(X_train, y_train, cat_features=categorical_features)
+
+        y_pred = final_model.predict(X_test)
+        y_proba = final_model.predict_proba(X_test)[:, 1]
+
     with mlflow.start_run():
         # Log best parameters
         mlflow.log_params(best_params)
@@ -204,10 +290,18 @@ def ffit():
         mlflow.log_metric("recall", recall)
         mlflow.log_metric("pr_auc", pr_auc_val)
 
-        # Log model using native LightGBM saving
-        model_path = "lgb_model.txt"
-        # final_model.booster_.save_model(model_path)
-        mlflow.log_artifact(model_path)
+        model_name = "flight_cancellation_model"
+
+        if best_model_type == "lightgbm":
+            mlflow.lightgbm.log_model(final_model, artifact_path="model", registered_model_name=model_name)
+
+        elif best_model_type == "xgboost":
+            mlflow.xgboost.log_model(final_model, artifact_path="model", registered_model_name=model_name)
+
+        elif best_model_type == "catboost":
+            mlflow.catboost.log_model(final_model, artifact_path="model", registered_model_name=model_name)
+
+
 
         # Feature importance logging
         if hasattr(final_model, "feature_importances_"):
@@ -221,7 +315,7 @@ def ffit():
 
             # Save CSV
             feat_imp_path = "feature_importances.csv"
-            # feat_imp_df.to_csv(feat_imp_path, index=False)
+            feat_imp_df.to_csv(feat_imp_path, index=False)
             mlflow.log_artifact(feat_imp_path)
 
             # Save top 30 bar plot
@@ -231,11 +325,12 @@ def ffit():
             plt.title("Top 30 Feature Importances")
             plt.tight_layout()
             plot_path = "feature_importance_plot.png"
-            # plt.savefig(plot_path)
+            plt.savefig(plot_path)
             mlflow.log_artifact(plot_path)
 
     # Optionally print classification report
     print(classification_report(y_test, y_pred))
 
 if __name__ == "__main__":
-    ffit()
+    args = ffit()
+    best_model_fit(*args)
