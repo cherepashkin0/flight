@@ -21,13 +21,23 @@ import mlflow.xgboost
 import mlflow.catboost
 import IPython
 import json
+from datetime import datetime
 
 import yaml
+from pathlib import Path
+
+
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder  # or OrdinalEncoder for XGBoost
 
 # Load config at the beginning
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
+today_results = os.path.join(config['output_path'], datetime.today().strftime('%Y-%m-%d'))
+Path(today_results).mkdir(exist_ok=True, parents=True)
 
 # from sklearn import set_config
 # set_config(transform_output='pandas')
@@ -154,7 +164,8 @@ def ffit():
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
     def objective(trial):
-        classifier_name = trial.suggest_categorical('classifier', ['lightgbm', 'xgboost', 'catboost'])
+        # classifier_name = trial.suggest_categorical('classifier', ['lightgbm', 'xgboost', 'catboost'])
+        classifier_name = trial.suggest_categorical('classifier', ['xgboost'])
 
         if classifier_name == 'lightgbm':
             param = {
@@ -175,7 +186,6 @@ def ffit():
             model = lgb.LGBMClassifier(**param)
 
         elif classifier_name == 'xgboost':
-            import xgboost as xgb
             param = {
                 'objective': 'binary:logistic',
                 'eval_metric': 'logloss',
@@ -186,12 +196,17 @@ def ffit():
                 'colsample_bytree': trial.suggest_float('xgboost_colsample_bytree', 0.5, 1.0),
                 'lambda': trial.suggest_float('xgboost_lambda', 1e-5, 10.0, log=True),
                 'alpha': trial.suggest_float('xgboost_alpha', 1e-5, 10.0, log=True),
-                'use_label_encoder': False
+                'use_label_encoder': False,
+                'verbose': -1
             }
-            model = xgb.XGBClassifier(**param, tree_method="hist", random_state=42)
+            model = xgb.XGBClassifier(
+                                        **param,
+                                        tree_method="hist",
+                                        enable_categorical=True,
+                                        random_state=42
+                                    )
 
         elif classifier_name == 'catboost':
-            from catboost import CatBoostClassifier
             param = {
                 'iterations': 500,
                 'learning_rate': trial.suggest_float('catboost_learning_rate', 1e-3, 1e-1, log=True),
@@ -217,11 +232,18 @@ def ffit():
 
             if classifier_name == 'xgboost':
                 # Convert categoricals to strings for LabelEncoder or use pd.get_dummies
-                X_tr = pd.get_dummies(X_tr, columns=categorical_features)
-                X_val = pd.get_dummies(X_val, columns=categorical_features)
-                # Align columns
-                X_tr, X_val = X_tr.align(X_val, join='left', axis=1, fill_value=0)
-                model.fit(X_tr, y_tr)
+
+                for col in categorical_features:
+                    X_tr[col] = X_tr[col].astype("category")
+                    X_val[col] = X_val[col].astype("category")
+
+                model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)])
+
+                # X_tr = pd.get_dummies(X_tr, columns=categorical_features)
+                # X_val = pd.get_dummies(X_val, columns=categorical_features)
+                # # Align columns
+                # X_tr, X_val = X_tr.align(X_val, join='left', axis=1, fill_value=0)
+                # model.fit(X_tr, y_tr)
 
             elif classifier_name == 'catboost':
                 # Ensure categorical columns are strings
@@ -268,13 +290,18 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
     elif best_model_type == 'xgboost':
         xgboost_params = remove_prefix_param(best_params, best_model_type)
 
-        X_train_encoded = pd.get_dummies(X_train, columns=categorical_features)
-        X_test_encoded = pd.get_dummies(X_test, columns=categorical_features)
-        X_train_encoded, X_test_encoded = X_train_encoded.align(X_test_encoded, join='left', axis=1, fill_value=0)
+        for col in categorical_features:
+            X_train[col] = X_train[col].astype("category")
+            X_test[col] = X_test[col].astype("category")
 
-        final_model = xgb.XGBClassifier(**xgboost_params, random_state=42, tree_method="hist")
-        final_model.fit(X_train_encoded, y_train)
-        X_test = X_test_encoded  # Обновляем X_test для предсказаний
+        final_model = xgb.XGBClassifier(
+            **xgboost_params,
+            tree_method="hist",
+            enable_categorical=True,
+            random_state=42
+        )
+        final_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+        # X_test = X_test_encoded  # Обновляем X_test для предсказаний
 
     elif best_model_type == 'catboost':
         catboost_params = remove_prefix_param(best_params, best_model_type)
@@ -326,16 +353,23 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
 
         # Feature importance logging
         if hasattr(final_model, "feature_importances_"):
-            all_features = numeric_features + categorical_features
             importances = final_model.feature_importances_
 
+            # Определить имена признаков в зависимости от типа модели
+            if best_model_type == 'xgboost':
+                feature_names = X_train.columns.tolist()
+            else:
+                feature_names = numeric_features + categorical_features
+
+            if len(importances) != len(feature_names):
+                raise ValueError(f"Mismatch: {len(importances)} importances vs {len(feature_names)} features")
             feat_imp_df = pd.DataFrame({
-                'feature': all_features,
+                'feature': feature_names,
                 'importance': importances
             }).sort_values(by='importance', ascending=False)
 
             # Save CSV
-            feat_imp_path = "feature_importances.csv"
+            feat_imp_path = os.path.join(today_results, "feature_importances.csv")
             feat_imp_df.to_csv(feat_imp_path, index=False)
             mlflow.log_artifact(feat_imp_path)
 
@@ -345,7 +379,7 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
             plt.xlabel("Importance")
             plt.title("Top 30 Feature Importances")
             plt.tight_layout()
-            plot_path = "feature_importance_plot.png"
+            plot_path = os.path.join(today_results, "feature_importance_plot.png")
             plt.savefig(plot_path)
             mlflow.log_artifact(plot_path)
 
