@@ -1,1 +1,20 @@
-flight_delay
+# Ignore all CSV, PNG, IPython notebooks, databases, and CatBoost binary models
+*.csv
+*.png
+*.ipynb
+*.db
+*.cbm
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore folders related to drafts and results
+flight_delay/
+drafts/
+mycoding/drafts/
+mycoding/catboost_info/
+mycoding/mlruns/
+mycoding/results/
+mycoding/sampled_rows/
+my_app/drafts/
