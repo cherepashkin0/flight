@@ -5,19 +5,17 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 import pandas as pd
 import lightgbm as lgb
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import recall_score, fbeta_score, precision_recall_curve, auc, make_scorer, classification_report
+from sklearn.metrics import recall_score, fbeta_score, precision_recall_curve, auc, classification_report
 from sklearn.impute import SimpleImputer
 from google.cloud import bigquery
 import optuna
 import os
 import mlflow
-import mlflow.sklearn
 import matplotlib.pyplot as plt
-from sklearn.base import BaseEstimator, TransformerMixin
 
 # from sklearn import set_config
 # set_config(transform_output='pandas')
@@ -28,6 +26,7 @@ table_name = 'combined_flights'
 dataset_name = 'flight_data'
 table_id = f'{project_id}.{dataset_name}.{table_name}'
 describe_df = pd.read_csv('results/flights_all_analysis_with_roles.csv')
+scaler = StandardScaler()
 
 def get_col_roles():
     dct_cols = {}
@@ -53,7 +52,8 @@ def get_skiped_cols(describe_df):
         'Column_Name'
     ].tolist()
     skip_cols = list(set(skip_cols + 
-    ['ArrDelay', 'ArrDelayMinutes', 'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__']))
+    ['DivAirportLandings', 'DepartureDelayGroups', 'AirTime', 'ArrivalDelayGroups', 'ArrDelay', 'ArrDelayMinutes',
+      'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__']))
     return skip_cols
 
 def drop_skip_cols(skip_cols, dct_cols):
@@ -128,7 +128,7 @@ def ffit():
         if classifier_name == 'lightgbm':
             param = {
                 'objective': 'binary',
-                'metric': 'binary_logloss',             
+                'metric': 'binary_logloss',
                 'boosting_type': 'gbdt',
                 'num_leaves': trial.suggest_int('lightgbm_num_leaves', 2, 32, log=True),
                 'max_depth': trial.suggest_int('lightgbm_max_depth', 3, 12),
@@ -141,62 +141,79 @@ def ffit():
                 'verbosity': -1,
                 'seed': 42
             }
-            model = lgb.LGBMClassifier(**param)
-            pipeline = Pipeline(steps=[
-                        ('preprocessor', preprocessor),
-                        ('classifier', model)
-                        ])
 
-            cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-            fbeta_scorer = make_scorer(fbeta_score, beta=2.0)
-            result = cross_val_score(pipeline, X_train, y_train, cv=cv, scoring=fbeta_scorer).mean()
-            # result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), 
-                                    #  cv=cv, scoring=make_scorer(fbeta_scorer, needs_proba=True)).mean()
-            print('user_attrs', trial.user_attrs)
-            # print(f"Mean F2: {trial.user_attrs['mean_f2']:.4f} ± {trial.user_attrs['std_f2']:.4f}")                                
-        return result
+            cv = StratifiedKFold(n_splits=4, shuffle=True, random_state=42)
+            scores = []
+
+            for train_idx, val_idx in cv.split(X_train, y_train):
+                X_tr, X_val = X_train.iloc[train_idx].copy(), X_train.iloc[val_idx].copy()
+                y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+                # Scale numeric columns
+                X_tr[numeric_features] = scaler.fit_transform(X_tr[numeric_features])
+                X_val[numeric_features] = scaler.transform(X_val[numeric_features])
+
+                model = lgb.LGBMClassifier(**param)
+                model.fit(X_tr, y_tr, categorical_feature=categorical_features)
+
+                y_pred = model.predict(X_val)
+                score = fbeta_score(y_val, y_pred, beta=2.0)
+                scores.append(score)
+        return np.mean(scores)
     try:
         study = optuna.load_study(study_name="my_study", storage="sqlite:///my_study.db")
     except:
         study = optuna.create_study(study_name="my_study", storage="sqlite:///my_study.db", direction="maximize")
     
-    study.optimize(objective, n_trials=3)
+    study.optimize(objective, n_trials=50)
 
     best_params = study.best_params
+    # Scale numeric features
+    X_train[numeric_features] = scaler.fit_transform(X_train[numeric_features])
+    X_test[numeric_features] = scaler.transform(X_test[numeric_features])
+
+    # Train final model
     final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
-    pipeline = Pipeline(steps=[
-                ('preprocessor', preprocessor),
-                ('classifier', final_model)
-                ])
-    pipeline.fit(X_train, y_train, categorical_feature=categorical_features)
-    y_pred = pipeline.predict(X_test)
+    final_model.fit(X_train, y_train, categorical_feature=categorical_features)
+
+    y_pred = final_model.predict(X_test)
+    y_proba = final_model.predict_proba(X_test)[:, 1]
+
+
+    # final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
+    # pipeline = Pipeline(steps=[
+    #             ('preprocessor', preprocessor),
+    #             ('classifier', final_model)
+    #             ])
+    # pipeline.fit(X_train, y_train, categorical_feature=categorical_features)
+    # y_pred = pipeline.predict(X_test)
     with mlflow.start_run():
-        # Log model params
+        # Log best parameters
         mlflow.log_params(best_params)
 
-        # Log metrics
-        y_proba = pipeline.predict_proba(X_test)[:, 1]
+        # Predict and compute metrics
+        y_proba = final_model.predict_proba(X_test)[:, 1]
+        y_pred = final_model.predict(X_test)
+
         f2 = fbeta_score(y_test, y_pred, beta=2.0)
         recall = recall_score(y_test, y_pred)
-        precision, recall_curve, _ = precision_recall_curve(y_test, y_proba)
-        pr_auc = auc(recall_curve, precision)
+        precision_vals, recall_vals, _ = precision_recall_curve(y_test, y_proba)
+        pr_auc_val = auc(recall_vals, precision_vals)
+
         mlflow.log_metric("f2_score", f2)
         mlflow.log_metric("recall", recall)
-        mlflow.log_metric("pr_auc", pr_auc)
+        mlflow.log_metric("pr_auc", pr_auc_val)
 
-        # Log model
-        mlflow.sklearn.log_model(pipeline, "model")
+        # Log model using native LightGBM saving
+        model_path = "lgb_model.txt"
+        # final_model.booster_.save_model(model_path)
+        mlflow.log_artifact(model_path)
 
-        # Feature importance
-        model = pipeline.named_steps["classifier"]
-        if hasattr(model, "feature_importances_"):
-            # Get feature names after preprocessing
-            ohe = pipeline.named_steps['preprocessor'].named_transformers_['cat'].named_steps['encoder']
-            cat_features = ohe.get_feature_names_out(categorical_features)
-            all_features = numeric_features + list(cat_features)
-            importances = model.feature_importances_
+        # Feature importance logging
+        if hasattr(final_model, "feature_importances_"):
+            all_features = numeric_features + categorical_features
+            importances = final_model.feature_importances_
 
-            # Create DataFrame
             feat_imp_df = pd.DataFrame({
                 'feature': all_features,
                 'importance': importances
@@ -204,18 +221,20 @@ def ffit():
 
             # Save CSV
             feat_imp_path = "feature_importances.csv"
-            feat_imp_df.to_csv(feat_imp_path, index=False)
+            # feat_imp_df.to_csv(feat_imp_path, index=False)
             mlflow.log_artifact(feat_imp_path)
 
-            # Plot and save bar chart
+            # Save top 30 bar plot
             plt.figure(figsize=(12, 6))
             plt.barh(feat_imp_df['feature'][:30][::-1], feat_imp_df['importance'][:30][::-1])
             plt.xlabel("Importance")
             plt.title("Top 30 Feature Importances")
             plt.tight_layout()
             plot_path = "feature_importance_plot.png"
-            plt.savefig(plot_path)
+            # plt.savefig(plot_path)
             mlflow.log_artifact(plot_path)
+
+    # Optionally print classification report
     print(classification_report(y_test, y_pred))
 
 if __name__ == "__main__":
