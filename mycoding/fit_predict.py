@@ -136,33 +136,9 @@ def ffit():
 
     numeric_features = dct_cols['num']
     categorical_features = dct_cols['cat'] + dct_cols['hot']
-
-
-    X[categorical_features] = X[categorical_features].astype('category')
-
-    # Preprocessing for numeric features
-    # numeric_transformer = Pipeline(steps=[
-    #     ('imputer', SimpleImputer(strategy='constant', fill_value=np.nan)),
-    #     ('scaler', StandardScaler())
-    # ])
-
-    # Preprocessing for categorical features
-    # categorical_transformer = Pipeline(steps=[
-    #     ('cat_imputer', CategoryImputer())
-    # ])
-    # categorical_transformer = 'passthrough'
-
-    # print('numeric: \n', numeric_features, 'categorical: \n', categorical_features, 'one_hotable: \n', one_hotable_features)
-    # Combine preprocessing
-    # preprocessor = ColumnTransformer(
-    #     transformers=[
-    #         ('num', numeric_transformer, numeric_features),
-    #         ('cat', categorical_transformer, categorical_features)
-    #     ]
-    #     )
-
+    preprocessor = create_preprocessor(numeric_features, categorical_features)
+    
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
-
     def objective(trial):
         # classifier_name = trial.suggest_categorical('classifier', ['lightgbm', 'xgboost', 'catboost'])
         classifier_name = trial.suggest_categorical('classifier', ['xgboost'])
@@ -218,48 +194,16 @@ def ffit():
                 'random_seed': 42
             }
             model = CatBoostClassifier(**param)
+        pipeline = build_pipeline(model, preprocessor)
 
-        cv = StratifiedKFold(n_splits=2, shuffle=True, random_state=42)
+        cv = StratifiedKFold(n_splits=config['cross_validation']['nfolds'], shuffle=True, random_state=42)
         scores = []
 
         for train_idx, val_idx in cv.split(X_train, y_train):
             X_tr, X_val = X_train.iloc[train_idx].copy(), X_train.iloc[val_idx].copy()
             y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-
-            # Scale numeric columns
-            X_tr[numeric_features] = scaler.fit_transform(X_tr[numeric_features])
-            X_val[numeric_features] = scaler.transform(X_val[numeric_features])
-
-            if classifier_name == 'xgboost':
-                # Convert categoricals to strings for LabelEncoder or use pd.get_dummies
-
-                for col in categorical_features:
-                    X_tr[col] = X_tr[col].astype("category")
-                    X_val[col] = X_val[col].astype("category")
-
-                model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)])
-
-                # X_tr = pd.get_dummies(X_tr, columns=categorical_features)
-                # X_val = pd.get_dummies(X_val, columns=categorical_features)
-                # # Align columns
-                # X_tr, X_val = X_tr.align(X_val, join='left', axis=1, fill_value=0)
-                # model.fit(X_tr, y_tr)
-
-            elif classifier_name == 'catboost':
-                # Ensure categorical columns are strings
-                for col in categorical_features:
-                    X_tr[col] = X_tr[col].astype(str)
-                    X_val[col] = X_val[col].astype(str)
-                model.fit(X_tr, y_tr, cat_features=categorical_features, eval_set=(X_val, y_val), verbose=False)
-
-            elif classifier_name == 'lightgbm':  # lightgbm
-                model.fit(X_tr, y_tr, categorical_feature=categorical_features)
-
-            y_pred = model.predict(X_val)
-
-            score = fbeta_score(y_val, y_pred, beta=2.0)
-            scores.append(score)
-
+            pipeline = train_pipeline(pipeline, X_tr, y_tr, categorical_features, classifier_name)
+            scores.append(evaluate_pipeline(pipeline, X_val, y_val))
         return np.mean(scores)
 
     study_name = config['optuna']['study_name']
@@ -273,26 +217,21 @@ def ffit():
 
     study.optimize(objective, n_trials=n_trials)
     
-    return study, X_train, X_test, y_train, y_test, categorical_features, numeric_features
+    return study, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor
 
 
-def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features, numeric_features):
+def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor):
     best_params = study.best_params
     print(best_params)
     best_model_type = best_params.pop('classifier')
 
     if best_model_type == 'lightgbm':
         lightgbm_params = remove_prefix_param(best_params, best_model_type)
-
         final_model = lgb.LGBMClassifier(**lightgbm_params, objective='binary', random_state=42)
-        final_model.fit(X_train, y_train, categorical_feature=categorical_features)
+        final_pipeline = build_pipeline(final_model, preprocessor)
 
     elif best_model_type == 'xgboost':
         xgboost_params = remove_prefix_param(best_params, best_model_type)
-
-        for col in categorical_features:
-            X_train[col] = X_train[col].astype("category")
-            X_test[col] = X_test[col].astype("category")
 
         final_model = xgb.XGBClassifier(
             **xgboost_params,
@@ -300,8 +239,7 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
             enable_categorical=True,
             random_state=42
         )
-        final_model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
-        # X_test = X_test_encoded  # Обновляем X_test для предсказаний
+        final_pipeline = build_pipeline(final_model, preprocessor)   
 
     elif best_model_type == 'catboost':
         catboost_params = remove_prefix_param(best_params, best_model_type)
@@ -316,75 +254,109 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
             random_seed=42,
             verbose=False
         )
-        final_model.fit(X_train, y_train, cat_features=categorical_features)
+        final_pipeline = build_pipeline(final_model, preprocessor)
 
-        y_pred = final_model.predict(X_test)
-        y_proba = final_model.predict_proba(X_test)[:, 1]
+    final_pipeline.fit(X_train, y_train)
 
     with mlflow.start_run():
         # Log best parameters
         mlflow.log_params(best_params)
 
         # Predict and compute metrics
-        y_proba = final_model.predict_proba(X_test)[:, 1]
-        y_pred = final_model.predict(X_test)
-
-        f2 = fbeta_score(y_test, y_pred, beta=2.0)
-        recall = recall_score(y_test, y_pred)
-        precision_vals, recall_vals, _ = precision_recall_curve(y_test, y_proba)
-        pr_auc_val = auc(recall_vals, precision_vals)
-
-        mlflow.log_metric("f2_score", f2)
-        mlflow.log_metric("recall", recall)
-        mlflow.log_metric("pr_auc", pr_auc_val)
-
+        y_pred = log_model_metrics(final_pipeline, X_test, y_test)
         model_name = config['mlflow']['model_name']
-
-        if best_model_type == "lightgbm":
-            mlflow.lightgbm.log_model(final_model, artifact_path="model", registered_model_name=model_name)
-
-        elif best_model_type == "xgboost":
-            mlflow.xgboost.log_model(final_model, artifact_path="model", registered_model_name=model_name)
-
-        elif best_model_type == "catboost":
-            mlflow.catboost.log_model(final_model, artifact_path="model", registered_model_name=model_name)
+        log_final_model(final_model, best_model_type, model_name)
 
 
+        if hasattr(final_pipeline.named_steps['classifier'], "feature_importances_"):
+            preprocessor = final_pipeline.named_steps['preprocessor']
+            feature_names = extract_feature_names(preprocessor, numeric_features, categorical_features)
 
-        # Feature importance logging
-        if hasattr(final_model, "feature_importances_"):
-            importances = final_model.feature_importances_
-
-            # Определить имена признаков в зависимости от типа модели
-            if best_model_type == 'xgboost':
-                feature_names = X_train.columns.tolist()
-            else:
-                feature_names = numeric_features + categorical_features
-
-            if len(importances) != len(feature_names):
-                raise ValueError(f"Mismatch: {len(importances)} importances vs {len(feature_names)} features")
-            feat_imp_df = pd.DataFrame({
-                'feature': feature_names,
-                'importance': importances
-            }).sort_values(by='importance', ascending=False)
-
-            # Save CSV
-            feat_imp_path = os.path.join(today_results, "feature_importances.csv")
-            feat_imp_df.to_csv(feat_imp_path, index=False)
-            mlflow.log_artifact(feat_imp_path)
-
-            # Save top 30 bar plot
-            plt.figure(figsize=(12, 6))
-            plt.barh(feat_imp_df['feature'][:30][::-1], feat_imp_df['importance'][:30][::-1])
-            plt.xlabel("Importance")
-            plt.title("Top 30 Feature Importances")
-            plt.tight_layout()
-            plot_path = os.path.join(today_results, "feature_importance_plot.png")
-            plt.savefig(plot_path)
-            mlflow.log_artifact(plot_path)
+            log_feature_importances(final_pipeline, feature_names, today_results)
 
     # Optionally print classification report
     print(classification_report(y_test, y_pred))
+
+def create_preprocessor(numeric_features, categorical_features):
+    numeric_transformer = Pipeline(steps=[
+        ('scaler', StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+
+    return ColumnTransformer(transformers=[
+        ('num', numeric_transformer, numeric_features),
+        ('cat', categorical_transformer, categorical_features)
+    ])
+
+def build_pipeline(model, preprocessor):
+    return Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('classifier', model)
+    ])
+
+def train_pipeline(pipeline, X_tr, y_tr, categorical_features, model_type):
+    if model_type == 'catboost':
+        X_tr[categorical_features] = X_tr[categorical_features].astype(str)
+    pipeline.fit(X_tr, y_tr)
+    return pipeline
+
+def evaluate_pipeline(pipeline, X_val, y_val):
+    y_pred = pipeline.predict(X_val)
+    return fbeta_score(y_val, y_pred, beta=2.0)
+
+def extract_feature_names(preprocessor, numeric_features, categorical_features):
+    num_feats = preprocessor.named_transformers_['num'].named_steps['scaler'].get_feature_names_out(numeric_features)
+    cat_feats = preprocessor.named_transformers_['cat'].named_steps['encoder'].get_feature_names_out(categorical_features)
+    return np.concatenate([num_feats, cat_feats])
+
+def log_feature_importances(pipeline, feature_names, output_path):
+    importances = pipeline.named_steps['classifier'].feature_importances_
+    if len(importances) != len(feature_names):
+        raise ValueError(f"Mismatch: {len(importances)} importances vs {len(feature_names)} features")
+
+    feat_imp_df = pd.DataFrame({
+        'feature': feature_names,
+        'importance': importances
+    }).sort_values(by='importance', ascending=False)
+
+    csv_path = os.path.join(output_path, "feature_importances.csv")
+    feat_imp_df.to_csv(csv_path, index=False)
+    mlflow.log_artifact(csv_path)
+
+    plt.figure(figsize=(12, 6))
+    plt.barh(feat_imp_df['feature'][:30][::-1], feat_imp_df['importance'][:30][::-1])
+    plt.xlabel("Importance")
+    plt.title("Top 30 Feature Importances")
+    plt.tight_layout()
+    plot_path = os.path.join(output_path, "feature_importance_plot.png")
+    plt.savefig(plot_path)
+    mlflow.log_artifact(plot_path)
+
+def log_model_metrics(pipeline, X_test, y_test):
+    y_pred = pipeline.predict(X_test)
+    y_proba = pipeline.predict_proba(X_test)[:, 1]
+
+    f2 = fbeta_score(y_test, y_pred, beta=2.0)
+    recall = recall_score(y_test, y_pred)
+    precision_vals, recall_vals, _ = precision_recall_curve(y_test, y_proba)
+    pr_auc_val = auc(recall_vals, precision_vals)
+
+    mlflow.log_metric("f2_score", f2)
+    mlflow.log_metric("recall", recall)
+    mlflow.log_metric("pr_auc", pr_auc_val)
+
+    return y_pred
+
+def log_final_model(model, model_type, model_name):
+    if model_type == "lightgbm":
+        mlflow.lightgbm.log_model(model, artifact_path="model", registered_model_name=model_name)
+    elif model_type == "xgboost":
+        mlflow.xgboost.log_model(model, artifact_path="model", registered_model_name=model_name)
+    elif model_type == "catboost":
+        mlflow.catboost.log_model(model, artifact_path="model", registered_model_name=model_name)
 
 if __name__ == "__main__":
     args = ffit()
