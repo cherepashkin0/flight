@@ -1,16 +1,14 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler 
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
+# from sklearn.compose import ColumnTransformer
+# from sklearn.impute import SimpleImputer
 import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+# from sklearn.pipeline import Pipeline
 from sklearn.metrics import recall_score, fbeta_score, precision_recall_curve, auc, classification_report
-from sklearn.impute import SimpleImputer
 from google.cloud import bigquery
 import optuna
 import os
@@ -21,16 +19,27 @@ from catboost import CatBoostClassifier
 import mlflow.lightgbm
 import mlflow.xgboost
 import mlflow.catboost
+import IPython
+import json
+
+import yaml
+
+# Load config at the beginning
+with open("config.yaml", "r") as file:
+    config = yaml.safe_load(file)
+
 
 # from sklearn import set_config
 # set_config(transform_output='pandas')
 
-SAMPLE_SIZE = 100_000
+SAMPLE_SIZE = config['project']['sample_size']
 project_id = os.environ.get('GCP_PROJECT_ID')
-table_name = 'combined_flights'
-dataset_name = 'flight_data'
+table_name = config['project']['table']
+dataset_name = config['project']['dataset']
 table_id = f'{project_id}.{dataset_name}.{table_name}'
-describe_df = pd.read_csv('results/flights_all_analysis_with_roles.csv')
+describe_df = pd.read_csv(config['data']['describe_csv_path'])
+
+
 scaler = StandardScaler()
 
 
@@ -57,9 +66,7 @@ def get_skiped_cols(describe_df):
         (describe_df['Data_leakage'] != 'unk'),
         'Column_Name'
     ].tolist()
-    skip_cols = list(set(skip_cols + 
-    ['DivAirportLandings', 'DepartureDelayGroups', 'AirTime', 'ArrivalDelayGroups', 'ArrDelay', 'ArrDelayMinutes',
-      'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__']))
+    skip_cols = list(set(skip_cols + config['columns']['skip_additional']))
     return skip_cols
 
 def drop_skip_cols(skip_cols, dct_cols):
@@ -99,7 +106,7 @@ def remove_prefix_param(best_params, prefix):
     return parameters
 
 def ffit():
-    mlflow.set_experiment("flight_cancellation_prediction")    
+    mlflow.set_experiment(config['mlflow']['experiment_name'])
     target_col = 'Cancelled'
     dct_cols = get_col_roles()
     skip_cols = get_skiped_cols(describe_df)
@@ -109,31 +116,40 @@ def ffit():
     X = df.drop(columns=[target_col])
     y = df[target_col]
 
+    inverted_roles = {
+        column: role
+        for role, columns in dct_cols.items()
+        for column in columns
+    }    
+    with open(config['data']['roles_output_path'], "w") as f:
+        json.dump(inverted_roles, f, indent=4)
+
     numeric_features = dct_cols['num']
     categorical_features = dct_cols['cat'] + dct_cols['hot']
+
 
     X[categorical_features] = X[categorical_features].astype('category')
 
     # Preprocessing for numeric features
-    numeric_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='constant', fill_value=np.nan)),
-        ('scaler', StandardScaler())
-    ])
+    # numeric_transformer = Pipeline(steps=[
+    #     ('imputer', SimpleImputer(strategy='constant', fill_value=np.nan)),
+    #     ('scaler', StandardScaler())
+    # ])
 
     # Preprocessing for categorical features
     # categorical_transformer = Pipeline(steps=[
     #     ('cat_imputer', CategoryImputer())
     # ])
-    categorical_transformer = 'passthrough'
+    # categorical_transformer = 'passthrough'
 
     # print('numeric: \n', numeric_features, 'categorical: \n', categorical_features, 'one_hotable: \n', one_hotable_features)
     # Combine preprocessing
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', numeric_transformer, numeric_features),
-            ('cat', categorical_transformer, categorical_features)
-        ]
-        )
+    # preprocessor = ColumnTransformer(
+    #     transformers=[
+    #         ('num', numeric_transformer, numeric_features),
+    #         ('cat', categorical_transformer, categorical_features)
+    #     ]
+    #     )
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.2, random_state=42)
 
@@ -224,12 +240,17 @@ def ffit():
 
         return np.mean(scores)
 
+    study_name = config['optuna']['study_name']
+    storage = config['optuna']['storage']
+    n_trials = config['optuna']['n_trials']
+
     try:
-        study = optuna.load_study(study_name="my_study2", storage="sqlite:///my_study2.db")
+        study = optuna.load_study(study_name=study_name, storage=storage)
     except:
-        study = optuna.create_study(study_name="my_study2", storage="sqlite:///my_study2.db", direction="maximize")
+        study = optuna.create_study(study_name=study_name, storage=storage, direction="maximize")
+
+    study.optimize(objective, n_trials=n_trials)
     
-    study.optimize(objective, n_trials=2)
     return study, X_train, X_test, y_train, y_test, categorical_features, numeric_features
 
 
@@ -290,7 +311,7 @@ def best_model_fit(study, X_train, X_test, y_train, y_test, categorical_features
         mlflow.log_metric("recall", recall)
         mlflow.log_metric("pr_auc", pr_auc_val)
 
-        model_name = "flight_cancellation_model"
+        model_name = config['mlflow']['model_name']
 
         if best_model_type == "lightgbm":
             mlflow.lightgbm.log_model(final_model, artifact_path="model", registered_model_name=model_name)

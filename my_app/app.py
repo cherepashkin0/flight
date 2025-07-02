@@ -1,9 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from typing import List
 import pandas as pd
 import lightgbm as lgb
-import joblib
-from io import BytesIO
+
+from pydantic_module import FlightFeatures 
 
 app = FastAPI()
 
@@ -15,24 +16,17 @@ except Exception as e:
 @app.get("/predict/")
 def explain_usage():
     return {
-        "message": "Please use POST /predict/ to upload a CSV file for prediction."
+        "message": "Please send POST /predict/ with a JSON body containing a list of records."
     }
 
 @app.post("/predict/")
-async def predict(file: UploadFile = File(...)): # request body as a file upload
-    if file.content_type != "text/csv":
-        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
-    
+def predict(data: List[FlightFeatures]):
     try:
-        contents = await file.read() # other commands to the app might be read during the file load
-        df = pd.read_csv(BytesIO(contents))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
-    
-    try:
+        # Convert to DataFrame
+        df = pd.DataFrame([d.dict() for d in data])
+        
+        # Run prediction
         preds = model.predict(df)
         return JSONResponse(content={"predictions": preds.tolist()})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
-
-

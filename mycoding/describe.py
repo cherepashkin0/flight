@@ -5,6 +5,10 @@ from datetime import datetime
 from pathlib import Path
 
 tdy = datetime.today().strftime('%Y-%m-%d')
+time_cols = ["CRSDepTime", "DepTime", "WheelsOff", "WheelsOn", "CRSArrTime", "ArrTime"]
+time_range_cols = ["DepTimeBlk", "ArrTimeBlk"]
+index_auto_cols = ['__index_level_0__ ']
+skip_preprocessed_cols = time_cols+time_range_cols+index_auto_cols
 
 def analyze_bigquery_table(
     table_id: str,
@@ -29,6 +33,7 @@ def analyze_bigquery_table(
     # Get table schema first
     table = bq_client.get_table(table_id)
     columns = [field.name for field in table.schema]
+    columns = [item for item in columns if item not in skip_preprocessed_cols]
     field_types = {field.name: field.field_type for field in table.schema}
     
     print(f"Analyzing {len(columns)} columns...")
@@ -97,5 +102,5 @@ if __name__ == "__main__":
     project_id = os.environ["GCP_PROJECT_ID"]
     
     # Compose the full table identifier
-    table_id = f"{project_id}.flights.flights_all"
+    table_id = f"{project_id}.flight_data.flights_all"
     analyze_bigquery_table(table_id, project=project_id)

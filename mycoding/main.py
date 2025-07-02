@@ -13,16 +13,18 @@ from pathlib import Path
 pd.options.display.max_rows = None
 pd.set_option('display.max_rows', None)
 import lightgbm as lgb
-from sklearn.metrics import f1_score, fbeta_score, precision_recall_curve, auc, make_scorer
+from sklearn.metrics import fbeta_score, precision_recall_curve, auc, make_scorer
 import optuna
 import IPython 
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, FunctionTransformer
+from sklearn.pipeline import Pipeline
 
 
 project_id = os.environ.get('GCP_PROJECT_ID')
 table_name = 'combined_flights'
 dataset_name = 'flight_data'
 table_id = f'{project_id}.{dataset_name}.{table_name}'
-SAMPLE_SIZE = 100_000
+SAMPLE_SIZE = 1_000_000
 PHIK_TARGET_HIGH_CORR = 0.85
 PHIK_PAIR_HIGH_CORR = 0.9
 
@@ -71,10 +73,8 @@ def train_test_split_create(dct_cols):
 
     X_train = df.drop(columns=['Cancelled']).iloc[train_idx]
     X_test = df.drop(columns=['Cancelled']).iloc[test_idx]
-    y_train = df[['Cancelled']].iloc[train_idx]
-    y_test = df[['Cancelled']].iloc[test_idx]
-    y_train['Cancelled'] = y_train['Cancelled'].astype('Int8')
-    y_test['Cancelled'] = y_test['Cancelled'].astype('Int8')
+    y_train = df[['Cancelled']].iloc[train_idx].astype('Int8')
+    y_test = df[['Cancelled']].iloc[test_idx].astype('Int8')
     # print("Unique y_train values:", y_train['Cancelled'].unique())
     print("Value counts:\n", y_train['Cancelled'].value_counts())
     return X_train, X_test, y_train, y_test
@@ -118,24 +118,7 @@ def phik_create_matrix(X_train, y_train, dct_cols, describe_df):
     # phik_long_unique.columns = ['column_a', 'column_b', 'value']
     # phik_long_unique.sort_values('value', ascending=False).to_csv(os.path.join(today_dir, 'phik_long.csv'), index=False)
 
-def fbeta_eval_lgb(y_pred, dataset):
-    y_true = dataset.get_label()
-    y_pred_binary = (y_pred > 0.5).astype(int)
-    return 'fbeta', fbeta_score(y_true, y_pred_binary, beta=1.0), True
-
-def pr_auc(y_true, y_proba, needs_proba):
-    precision, recall, _ = precision_recall_curve(y_true, y_proba, pos_label=1)
-    return auc(recall, precision)
-
-def fbeta_eval(y_true, y_proba, needs_proba, beta=2.0):
-    y_pred = (y_proba > 0.5).astype(int)
-    return fbeta_score(y_true, y_pred, beta=beta, pos_label=1)
-
-def fbeta_scorer(y_true, y_proba, needs_proba):
-    y_pred = (y_proba > 0.5).astype(int)
-    return fbeta_score(y_true, y_pred, beta=2.0, pos_label=1)
-
-def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
+def preprocessor(X):
     skip_cols = describe_df.loc[
         (describe_df['Skip_reason_phik'] != 'unk') |
         (describe_df['Phik_high_target'] != 'unk') |
@@ -163,13 +146,41 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
     print(f"Calculated pos_weight (for class imbalance): {pos_weight:.2f}")
 
     print("Final features shape:", X_train.shape)
+
+    std_scaler = StandardScaler().fit(X[:, :2])
+    min_max_scaler = MinMaxScaler().fit(X[:, 2:])
+    X[:, :2] = std_scaler.transform(X[:, :2])
+    X[:, 2:] = min_max_scaler.transform(X[:, :2])
+    return X
+
+
+
+def fbeta_eval_lgb(y_pred, dataset):
+    y_true = dataset.get_label()
+    y_pred_binary = (y_pred > 0.5).astype(int)
+    return 'fbeta', fbeta_score(y_true, y_pred_binary, beta=1.0), True
+
+def pr_auc(y_true, y_proba, needs_proba):
+    precision, recall, _ = precision_recall_curve(y_true, y_proba, pos_label=1)
+    return auc(recall, precision)
+
+def fbeta_eval(y_true, y_proba, needs_proba, beta=2.0):
+    y_pred = (y_proba > 0.5).astype(int)
+    return fbeta_score(y_true, y_pred, beta=beta, pos_label=1)
+
+def fbeta_scorer(y_true, y_proba, needs_proba):
+    y_pred = (y_proba > 0.5).astype(int)
+    return fbeta_score(y_true, y_pred, beta=2.0, pos_label=1)
+
+def fit_and_print(p, X_train, X_test, y_train, y_test, dct_cols, describe_df):
+
     # print("Number of non-null values:\n", X_train.notnull().sum())
     # print("Unique values per categorical column:\n", X_train[cat_cols].nunique())
 
-    train_data = lgb.Dataset(X_train[filtered_dct_cols['num']],
-                             label=y_train.squeeze(),
-                            #  feature_name=filtered_dct_cols['num'] + cat_cols,
-                             feature_name=filtered_dct_cols['num'])
+    # train_data = lgb.Dataset(X_train[filtered_dct_cols['num']],
+    #                          label=y_train.squeeze(),
+    #                         #  feature_name=filtered_dct_cols['num'] + cat_cols,
+    #                          feature_name=filtered_dct_cols['num'])
                             #  ,
                             #  categorical_feature=cat_cols)
 
@@ -195,16 +206,11 @@ def train(X_train, X_test, y_train, y_test, dct_cols, describe_df):
                 'verbosity': -1,
                 'seed': 42
             }
-            # cv_results = lgb.cv(param, train_data, num_boost_round=10, nfold=3, stratified=True, seed=42, return_cvbooster=False, feval=f1_eval)
             model = lgb.LGBMClassifier(**param)
             cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
             result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), cv=cv, scoring=make_scorer(pr_auc, needs_proba=True)).mean()
             # result = cross_val_score(model, X_train[filtered_dct_cols['num']], y_train.squeeze(), 
                                     #  cv=cv, scoring=make_scorer(fbeta_scorer, needs_proba=True)).mean()
-            # feval=f1_eval,
-            # print("Available cv keys:", list(cv_results.keys()))
-            # result_metric = np.mean(cv_results['valid auc-mefbeta_scoreran'])
-            # result_metric = np.mean(cv_results['valid f1-mean'])
         return result
     study = optuna.create_study()
     study.optimize(objective, n_trials=5)
@@ -273,7 +279,11 @@ def main():
     histogram_create(describe_df, dct_cols)
     X_train, X_test, y_train, y_test = train_test_split_create(dct_cols)
     phik_create_matrix(X_train, y_train, dct_cols, describe_df)
-    train(X_train, X_test, y_train, y_test, dct_cols, describe_df)
+
+    preprocess_transformer = FunctionTransformer(preprocessor)
+    p1 = Pipeline([('Scaler', preprocess_transformer), 
+                   ('lightGBM', train)])
+    fit_and_print(p1, X_train, X_test, y_train, y_test, dct_cols, describe_df)
 
 if __name__ == "__main__":
     today_date = datetime.today().strftime('%Y-%m-%d')
