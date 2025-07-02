@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from google.cloud import bigquery
 from pathlib import Path
+import json
 
 # Setup
 project_id = os.environ.get('GCP_PROJECT_ID')
@@ -19,13 +20,20 @@ client = bigquery.Client(project=project_id)
 # Number of samples per class
 SAMPLES_PER_CLASS = 5
 
+ROLE_PATH = "training_taken_roles.json"    
+
+
+
 def fetch_and_export(cancelled_value: bool, label: str, describe_df):
     # skip_cols = describe_df.loc[
     #     (describe_df['Skip_reason_phik'] != 'unk') |
     #     (describe_df['Data_leakage'] != 'unk'),
     #     'Column_Name'
     # ].tolist()
-    load_cols = ['AirTime', 'ArrivalDelayGroups', 'CRSElapsedTime', 'DOT_ID_Marketing_Airline', 'DOT_ID_Operating_Airline', 'DayofMonth', 'DepartureDelayGroups', 'DestAirportID', 'DestAirportSeqID', 'DestCityMarketID', 'DestStateFips', 'Distance', 'DivAirportLandings', 'OriginAirportID', 'OriginAirportSeqID', 'OriginCityMarketID', 'OriginStateFips', 'OriginWac']
+    with open(ROLE_PATH, "r") as f:
+        role_mapping = json.load(f)
+    load_cols = [key for key, _ in role_mapping.items()]
+    # load_cols = ['AirTime', 'ArrivalDelayGroups', 'CRSElapsedTime', 'DOT_ID_Marketing_Airline', 'DOT_ID_Operating_Airline', 'DayofMonth', 'DepartureDelayGroups', 'DestAirportID', 'DestAirportSeqID', 'DestCityMarketID', 'DestStateFips', 'Distance', 'DivAirportLandings', 'OriginAirportID', 'OriginAirportSeqID', 'OriginCityMarketID', 'OriginStateFips', 'OriginWac']
     # num_cols = describe_df.loc[describe_df['Role'] == 'num', 'Column_Name'].tolist()
     load_cols_str = ", ".join(f"`{col}`" for col in load_cols)  # wrap in backticks for safety
     query = f"""
