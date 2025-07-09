@@ -1,20 +1,31 @@
 project:
+  name: flight_cancellation_project
   dataset: flight_data
   table: combined_flights
-  sample_size: 100000
+  sample_size: 10000
+
+bq_logging:
+  target_table: mlflow_metrics_log
+  dataset: mlflow_tracking
+  gcs_bucket: mlflow_flight_cancellation
+
+output_path:
+  results/
 
 optuna:
-  study_name: my_study2
-  storage: sqlite:///my_study2.db
+  study_name: my_study5
+  storage: sqlite:///results/my_study5.db
   n_trials: 2
 
+cross_validation:
+  nfolds: 2
 mlflow:
   experiment_name: flight_cancellation_prediction
   model_name: flight_cancellation_model
 
 data:
   describe_csv_path: results/flights_all_analysis_with_roles.csv
-  roles_output_path: training_taken_roles.json
+  roles_output_path: results/training_taken_roles.json
 
 columns:
   target: Cancelled
@@ -32,3 +43,5 @@ columns:
     - TaxiIn
     - Diverted
     - __index_level_0__
+    - DepDel15
+    - ArrDel15

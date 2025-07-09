@@ -14,7 +14,6 @@ import xgboost as xgb
 from catboost import CatBoostClassifier
 import IPython
 import json
-from datetime import datetime
 
 import yaml
 from pathlib import Path
@@ -25,6 +24,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder  # or OrdinalEncoder for XGBoost
 import joblib
+from datetime import datetime, timezone
+
 
 # Load config at the beginning
 with open("config.yaml", "r") as file:
@@ -263,12 +264,14 @@ def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train,
     final_pipeline.fit(X_train, y_train)
     # full_params = full_params_dict[model_name]
 
-    with mlflow.start_run():
+    with mlflow.start_run() as run:
+        run_id = run.info.run_id
+        artifact_uri = mlflow.get_artifact_uri()
         # Log best parameters
         mlflow.log_params(full_params)
 
         # Predict and compute metrics
-        y_pred = log_model_metrics(final_pipeline, X_test, y_test)
+        y_pred = log_model_metrics(final_pipeline, X_test, y_test, model_name, artifact_uri, run_id)
         # IPython.embed()
         log_final_pipeline(final_pipeline, model_name)
 
@@ -398,7 +401,7 @@ def log_feature_importances(pipeline, feature_names, output_path):
     plt.savefig(plot_path)
     mlflow.log_artifact(plot_path)
 
-def log_model_metrics(pipeline, X_test, y_test):
+def log_model_metrics(pipeline, X_test, y_test, model_name, artifact_uri, run_id):
     y_pred = pipeline.predict(X_test)
     y_proba = pipeline.predict_proba(X_test)[:, 1]
 
@@ -411,7 +414,15 @@ def log_model_metrics(pipeline, X_test, y_test):
     mlflow.log_metric("recall", recall)
     mlflow.log_metric("pr_auc", pr_auc_val)
 
+    # Push metrics to BigQuery using actual MLflow artifact URI
+    pipeline_uri = f"{artifact_uri}/{model_name}_pipeline.pkl"
+
+    log_metric_to_bigquery(model_name, "f2_score", f2, pipeline_uri)
+    log_metric_to_bigquery(model_name, "recall", recall, pipeline_uri)
+    log_metric_to_bigquery(model_name, "pr_auc", pr_auc_val, pipeline_uri)
+
     return y_pred
+
 
 def log_final_pipeline(pipeline, model_name):
     model_path = os.path.join(today_results, model_name + "_pipeline")
@@ -427,6 +438,27 @@ def log_final_pipeline(pipeline, model_name):
         sk_model=pipeline,
         artifact_path=model_name + "_mlflow_model"
     )
+
+def log_metric_to_bigquery(model_name, metric_name, metric_value, pipeline_uri):
+    client = bigquery.Client(project=project_id)
+    table_id = f"{project_id}.{config['bq_logging']['dataset']}.{config['bq_logging']['target_table']}"
+
+    project_name = config['project']['name']
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    row = {
+        "timestamp": timestamp,
+        "project_name": project_name,
+        "model_name": model_name,
+        "metric_name": metric_name,
+        "metric_value": metric_value,
+        "pipeline_uri": pipeline_uri  # <- now from actual MLflow URI
+    }
+
+    errors = client.insert_rows_json(table_id, [row])
+    if errors:
+        print(f"Error inserting row to BigQuery: {errors}")
+
 
 if __name__ == "__main__":
     study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict = ffit_all_models()
