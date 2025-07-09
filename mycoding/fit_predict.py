@@ -24,6 +24,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder  # or OrdinalEncoder for XGBoost
+import joblib
 
 # Load config at the beginning
 with open("config.yaml", "r") as file:
@@ -413,7 +414,19 @@ def log_model_metrics(pipeline, X_test, y_test):
     return y_pred
 
 def log_final_pipeline(pipeline, model_name):
-    mlflow.sklearn.log_model(pipeline, model_name)
+    model_path = os.path.join(today_results, model_name + "_pipeline")
+    
+    # Save locally
+    joblib.dump(pipeline, model_path + ".pkl")
+    
+    # Log with MLflow
+    mlflow.log_artifact(model_path + ".pkl")
+    
+    # Optional: Also log as MLflow model for direct serving later
+    mlflow.sklearn.log_model(
+        sk_model=pipeline,
+        artifact_path=model_name + "_mlflow_model"
+    )
 
 if __name__ == "__main__":
     study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict = ffit_all_models()
