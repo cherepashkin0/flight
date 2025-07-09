@@ -28,9 +28,9 @@ if uploaded_file is not None:
                 response = requests.post(API_URL, json=records)
                 if response.status_code == 200:
                     predictions = response.json()["predictions"]
-                    df["Prediction"] = predictions
+                    # df["Prediction"] = predictions
                     st.success("Predictions received:")
-                    st.dataframe(df)
+                    st.dataframe(pd.DataFrame({"Prediction": predictions}))
                 else:
                     st.error(f"Request failed: {response.status_code}\n{response.text}")
     except Exception as e:
