@@ -1,13 +1,9 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler 
-# from sklearn.compose import ColumnTransformer
-# from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
 import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-# from sklearn.pipeline import Pipeline
 from sklearn.metrics import recall_score, fbeta_score, precision_recall_curve, auc, classification_report
 from google.cloud import bigquery
 import optuna
@@ -16,9 +12,6 @@ import mlflow
 import matplotlib.pyplot as plt
 import xgboost as xgb
 from catboost import CatBoostClassifier
-# import mlflow.lightgbm
-# import mlflow.xgboost
-# import mlflow.catboost
 import IPython
 import json
 from datetime import datetime
@@ -85,14 +78,6 @@ def drop_skip_cols(skip_cols, dct_cols):
         filtered_dct_cols[key] = [col for col in cols if col not in skip_cols]
     return filtered_dct_cols
 
-# def remove_prefix_param(best_params, prefix):
-#     parameters = {
-#             key.replace(prefix+'_', ''): value
-#             for key, value in best_params.items()
-#             if key.startswith(prefix+'_')
-#                 }
-#     return parameters
-
 def ffit_all_models():
     target_col = 'Cancelled'
     dct_cols = get_col_roles()
@@ -113,33 +98,30 @@ def ffit_all_models():
 
     numeric_features = dct_cols['num']
     categorical_features = dct_cols['cat'] + dct_cols['hot']
-    preprocessor = create_preprocessor(numeric_features, categorical_features)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, stratify=y, test_size=0.2, random_state=42
     )
 
-    def run_study(objective_fn, model_name):
+    def run_study(objective_fn, preprocessor_fn, model_name):
         print(f"Running study for: {model_name}")
         study = optuna.create_study(direction="maximize")
         study.optimize(lambda trial: objective_fn(
-            trial, X_train, y_train, categorical_features, numeric_features, preprocessor
+            trial, X_train, y_train, categorical_features, numeric_features, preprocessor_fn
         ), n_trials=config['optuna']['n_trials'])
         return study
 
+    preprocessors_dict = {"lightgbm": preprocessor_lightgbm_make(numeric_features, categorical_features), 
+                          "xgboost": preprocessor_xgboost_make(numeric_features, categorical_features),
+                          "catboost": preprocessor_catboost_make(numeric_features, categorical_features)}
     # Индивидуальные objective-функции
-    study_lgb = run_study(objective_lightgbm, 'lightgbm')
-    study_xgb = run_study(objective_xgboost, 'xgboost')
-    study_cat = run_study(objective_catboost, 'catboost')
+    study_lgb = run_study(objective_lightgbm, preprocessors_dict["lightgbm"], 'lightgbm')
+    study_xgb = run_study(objective_xgboost, preprocessors_dict["xgboost"], 'xgboost')
+    study_cat = run_study(objective_catboost, preprocessors_dict["catboost"], 'catboost')
 
-    # Выбор лучшего
-    best_study = max(
-        [('lightgbm', study_lgb), ('xgboost', study_xgb), ('catboost', study_cat)],
-        key=lambda x: x[1].best_value
-    )
-
-    print(f"✅ Best model: {best_study[0]} with F2 score = {best_study[1].best_value:.4f}")
-    return best_study[0], best_study[1], X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor
+    study_dict = {"lightgbm": study_lgb, "xgboost": study_xgb, "catboost": study_cat}
+    # study_dict = {"catboost": study_cat}
+    return study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict
 
 
 def objective_lightgbm(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
@@ -209,76 +191,76 @@ def objective_catboost(trial, X_train, y_train, categorical_features, numeric_fe
         'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
         'loss_function': 'Logloss',
         'verbose': False,
-        'random_seed': 42
+        'random_seed': 42,
+        'cat_features': categorical_features  # directly use column names
     }
 
     model = CatBoostClassifier(**params)
-
-    # Преобразуем категориальные признаки в строки (обязательно для CatBoost)
-    X_train_cp = X_train.copy()
-    for col in categorical_features:
-        X_train_cp[col] = X_train_cp[col].astype(str)
 
     pipeline = build_pipeline(model, preprocessor)
 
     cv = StratifiedKFold(n_splits=config['cross_validation']['nfolds'], shuffle=True, random_state=42)
     scores = []
-    for train_idx, val_idx in cv.split(X_train_cp, y_train):
-        X_tr, X_val = X_train_cp.iloc[train_idx], X_train_cp.iloc[val_idx]
+    for train_idx, val_idx in cv.split(X_train, y_train):
+        X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
         y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
         pipeline.fit(X_tr, y_tr)
         scores.append(evaluate_pipeline(pipeline, X_val, y_val))
     return np.mean(scores)
 
-def best_model_fit(model_name, study, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor):
-    mlflow.set_experiment(config['mlflow']['experiment_name'])
+
+def objective_catboost(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
+    """Simplified CatBoost objective that doesn't use cat_features parameter"""
+    params = {
+        'iterations': 500,
+        'learning_rate': trial.suggest_float('learning_rate', 1e-3, 1e-1, log=True),
+        'depth': trial.suggest_int('depth', 3, 10),
+        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-2, 10.0, log=True),
+        'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
+        'loss_function': 'Logloss',
+        'verbose': False,
+        'random_seed': 42,
+        # Don't specify cat_features - let it work with one-hot encoded features
+    }
+
+    model = CatBoostClassifier(**params)
+    pipeline = build_pipeline(model, preprocessor)
+
+    cv = StratifiedKFold(n_splits=config['cross_validation']['nfolds'], shuffle=True, random_state=42)
+    scores = []
+    for train_idx, val_idx in cv.split(X_train, y_train):
+        X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+        y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+        pipeline.fit(X_tr, y_tr)
+        scores.append(evaluate_pipeline(pipeline, X_val, y_val))
+    return np.mean(scores)
+
+
+
+def build_final_model(model_name, study):
+    # for model_name, study in study_dict.items():
     best_params = study.best_params
-    # print(best_params)
-    best_model_type = model_name
-    if best_model_type == 'lightgbm':
+    if model_name == "lightgbm":
         final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
-        full_params = {
-            **lightgbm_params,
-            'objective': 'binary',
-            'random_state': 42
-        }
-        final_pipeline = build_pipeline(final_model, preprocessor)
-
-    elif best_model_type == 'xgboost':
+    elif model_name == "xgboost":
         final_model = xgb.XGBClassifier(
-            **best_params,
-            tree_method="hist",
-            enable_categorical=True,
-            random_state=42
-        )
-        full_params = {
-            **best_params,
-            'tree_method': 'hist',
-            'enable_categorical': True,
-            'random_state': 42
-        }        
-        final_pipeline = build_pipeline(final_model, preprocessor)   
-
-    elif best_model_type == 'catboost':
-        for col in categorical_features:
-            X_train[col] = X_train[col].astype(str)
-            X_test[col] = X_test[col].astype(str)
-
+                        **best_params,
+                        tree_method="hist",
+                        enable_categorical=True,
+                        random_state=42
+                    )
+    elif model_name == "catboost":
         final_model = CatBoostClassifier(
             **best_params,
             loss_function="Logloss",
             random_seed=42,
             verbose=False
         )
-        full_params = {
-            **best_params,
-            'loss_function': 'Logloss',
-            'random_seed': 42,
-            'verbose': False
-        }        
-        final_pipeline = build_pipeline(final_model, preprocessor)
+    return final_model
 
+def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train, y_test, full_params):
     final_pipeline.fit(X_train, y_train)
+    # full_params = full_params_dict[model_name]
 
     with mlflow.start_run():
         # Log best parameters
@@ -286,7 +268,6 @@ def best_model_fit(model_name, study, X_train, X_test, y_train, y_test, categori
 
         # Predict and compute metrics
         y_pred = log_model_metrics(final_pipeline, X_test, y_test)
-        model_name = config['mlflow']['model_name']
         # IPython.embed()
         log_final_pipeline(final_pipeline, model_name)
 
@@ -300,7 +281,36 @@ def best_model_fit(model_name, study, X_train, X_test, y_train, y_test, categori
     # Optionally print classification report
     print(classification_report(y_test, y_pred))
 
-def create_preprocessor(numeric_features, categorical_features):
+def final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict):
+    final_pipeline_dict = {}
+    full_params_dict = {}
+
+    for model_name, study in study_dict.items():
+        if study is None:
+            continue
+        best_params = study.best_params
+        final_model = build_final_model(model_name, study)
+        final_pipeline = build_pipeline(final_model, preprocessors_dict[model_name])
+        
+        final_pipeline_dict[model_name] = final_pipeline
+        full_params_dict[model_name] = get_full_params(model_name, best_params)
+
+    for model_name, pipeline in final_pipeline_dict.items():
+        if pipeline:
+            train_and_log_pipeline(model_name, pipeline, X_train, X_test, y_train, y_test, full_params_dict[model_name])
+     
+
+def get_full_params(model_name, best_params):
+    common_params = {'random_state': 42}
+    if model_name == 'lightgbm':
+        return {**best_params, **common_params, 'objective': 'binary'}
+    elif model_name == 'xgboost':
+        return {**best_params, **common_params, 'tree_method': 'hist', 'enable_categorical': True}
+    elif model_name == 'catboost':
+        return {**best_params, 'loss_function': 'Logloss', 'random_seed': 42, 'verbose': False}
+    return best_params
+
+def preprocessor_lightgbm_make(numeric_features, categorical_features):
     numeric_transformer = Pipeline(steps=[
         ('scaler', StandardScaler())
     ])
@@ -314,11 +324,40 @@ def create_preprocessor(numeric_features, categorical_features):
         ('cat', categorical_transformer, categorical_features)
     ])
 
+def preprocessor_xgboost_make(numeric_features, categorical_features):
+    numeric_transformer = Pipeline(steps=[
+        ('scaler', StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+
+    return ColumnTransformer(transformers=[
+        ('num', numeric_transformer, numeric_features),
+        ('cat', categorical_transformer, categorical_features)
+    ])
+
+def preprocessor_catboost_make(numeric_features, categorical_features):
+    numeric_transformer = Pipeline(steps=[
+        ('scaler', StandardScaler())
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+
+    return ColumnTransformer(transformers=[
+        ('num', numeric_transformer, numeric_features),
+        ('cat', categorical_transformer, categorical_features)
+    ])
+
+
 def build_pipeline(model, preprocessor):
     return Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('classifier', model)
-    ])
+    ], verbose=False)
 
 def train_pipeline(pipeline, X_tr, y_tr, categorical_features, model_name):
     if model_name == 'catboost':
@@ -377,5 +416,5 @@ def log_final_pipeline(pipeline, model_name):
     mlflow.sklearn.log_model(pipeline, model_name)
 
 if __name__ == "__main__":
-    model_name, study, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor = ffit_all_models()
-    best_model_fit(model_name, study, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessor)
+    study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict = ffit_all_models()
+    final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict)
