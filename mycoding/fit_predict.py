@@ -25,7 +25,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder  # or OrdinalEncoder for XGBoost
 import joblib
 from datetime import datetime, timezone
-
+from sklearn.preprocessing import OrdinalEncoder
 
 # Load config at the beginning
 with open("config.yaml", "r") as file:
@@ -105,28 +105,29 @@ def ffit_all_models():
         X, y, stratify=y, test_size=0.2, random_state=42
     )
 
-    def run_study(objective_fn, preprocessor_fn, model_name):
+    def run_study(objective_fn, model_name):
         print(f"Running study for: {model_name}")
         study = optuna.create_study(direction="maximize")
         study.optimize(lambda trial: objective_fn(
-            trial, X_train, y_train, categorical_features, numeric_features, preprocessor_fn
-        ), n_trials=config['optuna']['n_trials'])
+            trial, X_train, y_train, categorical_features, numeric_features
+            ), n_trials=config['optuna']['n_trials'])
         return study
 
-    preprocessors_dict = {"lightgbm": preprocessor_lightgbm_make(numeric_features, categorical_features), 
-                          "xgboost": preprocessor_xgboost_make(numeric_features, categorical_features),
-                          "catboost": preprocessor_catboost_make(numeric_features, categorical_features)}
     # Индивидуальные objective-функции
-    study_lgb = run_study(objective_lightgbm, preprocessors_dict["lightgbm"], 'lightgbm')
-    study_xgb = run_study(objective_xgboost, preprocessors_dict["xgboost"], 'xgboost')
-    study_cat = run_study(objective_catboost, preprocessors_dict["catboost"], 'catboost')
+    study_lgb = run_study(objective_lightgbm, 'lightgbm')
+    study_xgb = run_study(objective_xgboost, 'xgboost')
+    study_cat = run_study(objective_catboost, 'catboost')
 
     study_dict = {"lightgbm": study_lgb, "xgboost": study_xgb, "catboost": study_cat}
     # study_dict = {"catboost": study_cat}
-    return study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict
+    return study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features
 
 
-def objective_lightgbm(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
+def objective_lightgbm(trial, X_train, y_train, categorical_features, numeric_features):
+    k_threshold = trial.suggest_int("k_unique_threshold", 0, 8)
+    hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
+    preprocessor = preprocessor_lightgbm_make(numeric_features, hot_cols, cat_cols)
+
     params = {
         'objective': 'binary',
         'metric': 'binary_logloss',
@@ -154,7 +155,10 @@ def objective_lightgbm(trial, X_train, y_train, categorical_features, numeric_fe
         scores.append(evaluate_pipeline(pipeline, X_val, y_val))
     return np.mean(scores)
 
-def objective_xgboost(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
+def objective_xgboost(trial, X_train, y_train, categorical_features, numeric_features):
+    k_threshold = trial.suggest_int("k_unique_threshold", 0, 8)
+    hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
+    preprocessor = preprocessor_xgboost_make(numeric_features, hot_cols, cat_cols)
     params = {
         'objective': 'binary:logistic',
         'eval_metric': 'logloss',
@@ -184,7 +188,9 @@ def objective_xgboost(trial, X_train, y_train, categorical_features, numeric_fea
         scores.append(evaluate_pipeline(pipeline, X_val, y_val))
     return np.mean(scores)
 
-def objective_catboost(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
+def objective_catboost(trial, X_train, y_train, categorical_features, numeric_features):
+    preprocessor = preprocessor_catboost_make(numeric_features, categorical_features)
+    
     params = {
         'iterations': 500,
         'learning_rate': trial.suggest_float('learning_rate', 1e-3, 1e-1, log=True),
@@ -193,36 +199,7 @@ def objective_catboost(trial, X_train, y_train, categorical_features, numeric_fe
         'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
         'loss_function': 'Logloss',
         'verbose': False,
-        'random_seed': 42,
-        'cat_features': categorical_features  # directly use column names
-    }
-
-    model = CatBoostClassifier(**params)
-
-    pipeline = build_pipeline(model, preprocessor)
-
-    cv = StratifiedKFold(n_splits=config['cross_validation']['nfolds'], shuffle=True, random_state=42)
-    scores = []
-    for train_idx, val_idx in cv.split(X_train, y_train):
-        X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
-        y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
-        pipeline.fit(X_tr, y_tr)
-        scores.append(evaluate_pipeline(pipeline, X_val, y_val))
-    return np.mean(scores)
-
-
-def objective_catboost(trial, X_train, y_train, categorical_features, numeric_features, preprocessor):
-    """Simplified CatBoost objective that doesn't use cat_features parameter"""
-    params = {
-        'iterations': 500,
-        'learning_rate': trial.suggest_float('learning_rate', 1e-3, 1e-1, log=True),
-        'depth': trial.suggest_int('depth', 3, 10),
-        'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-2, 10.0, log=True),
-        'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
-        'loss_function': 'Logloss',
-        'verbose': False,
-        'random_seed': 42,
-        # Don't specify cat_features - let it work with one-hot encoded features
+        'random_seed': 42
     }
 
     model = CatBoostClassifier(**params)
@@ -236,8 +213,6 @@ def objective_catboost(trial, X_train, y_train, categorical_features, numeric_fe
         pipeline.fit(X_tr, y_tr)
         scores.append(evaluate_pipeline(pipeline, X_val, y_val))
     return np.mean(scores)
-
-
 
 def build_final_model(model_name, study):
     # for model_name, study in study_dict.items():
@@ -262,7 +237,6 @@ def build_final_model(model_name, study):
 
 def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train, y_test, full_params):
     final_pipeline.fit(X_train, y_train)
-    # full_params = full_params_dict[model_name]
 
     with mlflow.start_run() as run:
         run_id = run.info.run_id
@@ -272,37 +246,53 @@ def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train,
 
         # Predict and compute metrics
         y_pred = log_model_metrics(final_pipeline, X_test, y_test, model_name, artifact_uri, run_id)
-        # IPython.embed()
+        
         log_final_pipeline(final_pipeline, model_name)
 
-
+        # Log feature importances if available
         if hasattr(final_pipeline.named_steps['classifier'], "feature_importances_"):
-            preprocessor = final_pipeline.named_steps['preprocessor']
-            feature_names = extract_feature_names(preprocessor, numeric_features, categorical_features)
-
-            log_feature_importances(final_pipeline, feature_names, today_results)
+            log_feature_importances(final_pipeline, [], today_results)  # Pass empty lists as we extract names inside
 
     # Optionally print classification report
     print(classification_report(y_test, y_pred))
 
-def final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict):
+def final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features):
     final_pipeline_dict = {}
     full_params_dict = {}
 
     for model_name, study in study_dict.items():
         if study is None:
             continue
+
         best_params = study.best_params
+        k_threshold = best_params.get("k_unique_threshold", 5)  # fallback на 5, если параметра нет
+        hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
+
+        # Построить нужный препроцессор
+        if model_name == "lightgbm":
+            k_threshold = best_params.get("k_unique_threshold", 5)
+            hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
+            preprocessor = preprocessor_lightgbm_make(numeric_features, hot_cols, cat_cols)
+        elif model_name == "xgboost":
+            k_threshold = best_params.get("k_unique_threshold", 5)
+            hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
+            preprocessor = preprocessor_xgboost_make(numeric_features, hot_cols, cat_cols)
+        elif model_name == "catboost":
+            preprocessor = preprocessor_catboost_make(numeric_features, categorical_features)
+        else:
+            continue
+
+        # Построить модель и пайплайн
         final_model = build_final_model(model_name, study)
-        final_pipeline = build_pipeline(final_model, preprocessors_dict[model_name])
-        
+        final_pipeline = build_pipeline(final_model, preprocessor)
+
         final_pipeline_dict[model_name] = final_pipeline
         full_params_dict[model_name] = get_full_params(model_name, best_params)
 
+    # Обучение и логгирование
     for model_name, pipeline in final_pipeline_dict.items():
         if pipeline:
             train_and_log_pipeline(model_name, pipeline, X_train, X_test, y_train, y_test, full_params_dict[model_name])
-     
 
 def get_full_params(model_name, best_params):
     common_params = {'random_state': 42}
@@ -314,32 +304,38 @@ def get_full_params(model_name, best_params):
         return {**best_params, 'loss_function': 'Logloss', 'random_seed': 42, 'verbose': False}
     return best_params
 
-def preprocessor_lightgbm_make(numeric_features, categorical_features):
+def preprocessor_lightgbm_make(numeric_features, hot_features, cat_features):
     numeric_transformer = Pipeline(steps=[
         ('scaler', StandardScaler())
     ])
-
-    categorical_transformer = Pipeline(steps=[
+    hot_transformer = Pipeline(steps=[
         ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+    cat_transformer = Pipeline(steps=[
+        ('ordinal', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
     ])
 
     return ColumnTransformer(transformers=[
         ('num', numeric_transformer, numeric_features),
-        ('cat', categorical_transformer, categorical_features)
+        ('hot', hot_transformer, hot_features),
+        ('cat', cat_transformer, cat_features)
     ])
 
-def preprocessor_xgboost_make(numeric_features, categorical_features):
+def preprocessor_xgboost_make(numeric_features, hot_features, cat_features):
     numeric_transformer = Pipeline(steps=[
         ('scaler', StandardScaler())
     ])
-
-    categorical_transformer = Pipeline(steps=[
+    hot_transformer = Pipeline(steps=[
         ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
+    cat_transformer = Pipeline(steps=[
+        ('ordinal', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
     ])
 
     return ColumnTransformer(transformers=[
         ('num', numeric_transformer, numeric_features),
-        ('cat', categorical_transformer, categorical_features)
+        ('hot', hot_transformer, hot_features),
+        ('cat', cat_transformer, cat_features)
     ])
 
 def preprocessor_catboost_make(numeric_features, categorical_features):
@@ -374,17 +370,66 @@ def evaluate_pipeline(pipeline, X_val, y_val):
     return fbeta_score(y_val, y_pred, beta=2.0)
 
 def extract_feature_names(preprocessor, numeric_features, categorical_features):
-    num_feats = preprocessor.named_transformers_['num'].named_steps['scaler'].get_feature_names_out(numeric_features)
-    cat_feats = preprocessor.named_transformers_['cat'].named_steps['encoder'].get_feature_names_out(categorical_features)
-    return np.concatenate([num_feats, cat_feats])
+    """
+    Extract feature names from the preprocessor after transformation.
+    Handles OneHotEncoder and OrdinalEncoder properly.
+    """
+    try:
+        # Try to get feature names directly from preprocessor
+        return preprocessor.get_feature_names_out()
+    except AttributeError:
+        # If get_feature_names_out() is not available, construct manually
+        output_features = []
+        
+        # Get the transformers from ColumnTransformer
+        for name, transformer, columns in preprocessor.transformers_:
+            if name == 'num':
+                # Numeric features keep their names after scaling
+                output_features.extend(columns)
+            elif name == 'hot':
+                # OneHot encoded features - get expanded feature names
+                if hasattr(transformer, 'named_steps') and 'encoder' in transformer.named_steps:
+                    encoder = transformer.named_steps['encoder']
+                    if hasattr(encoder, 'get_feature_names_out'):
+                        # Use the encoder's feature names
+                        hot_feature_names = encoder.get_feature_names_out(columns)
+                        output_features.extend(hot_feature_names)
+                    else:
+                        # Fallback: construct feature names manually
+                        for col in columns:
+                            unique_vals = encoder.categories_[columns.index(col)]
+                            for val in unique_vals:
+                                output_features.append(f"{col}_{val}")
+            elif name == 'cat':
+                # Ordinal encoded features keep their original names
+                if hasattr(transformer, 'named_steps') and 'ordinal' in transformer.named_steps:
+                    output_features.extend(columns)
+                elif hasattr(transformer, 'named_steps') and 'encoder' in transformer.named_steps:
+                    # If it's OneHotEncoder in cat transformer
+                    encoder = transformer.named_steps['encoder']
+                    if hasattr(encoder, 'get_feature_names_out'):
+                        cat_feature_names = encoder.get_feature_names_out(columns)
+                        output_features.extend(cat_feature_names)
+        
+        return np.array(output_features)
 
 def log_feature_importances(pipeline, feature_names, output_path):
+    """
+    Log feature importances with proper feature name extraction.
+    """
     importances = pipeline.named_steps['classifier'].feature_importances_
-    if len(importances) != len(feature_names):
-        raise ValueError(f"Mismatch: {len(importances)} importances vs {len(feature_names)} features")
-
+    
+    # Get the actual feature names from the preprocessor
+    preprocessor = pipeline.named_steps['preprocessor']
+    actual_feature_names = extract_feature_names(preprocessor, [], [])
+    
+    if len(importances) != len(actual_feature_names):
+        print(f"Warning: {len(importances)} importances vs {len(actual_feature_names)} features")
+        # Use indices as fallback
+        actual_feature_names = [f"feature_{i}" for i in range(len(importances))]
+    
     feat_imp_df = pd.DataFrame({
-        'feature': feature_names,
+        'feature': actual_feature_names,
         'importance': importances
     }).sort_values(by='importance', ascending=False)
 
@@ -393,7 +438,8 @@ def log_feature_importances(pipeline, feature_names, output_path):
     mlflow.log_artifact(csv_path)
 
     plt.figure(figsize=(12, 6))
-    plt.barh(feat_imp_df['feature'][:30][::-1], feat_imp_df['importance'][:30][::-1])
+    top_30 = feat_imp_df.head(30)
+    plt.barh(top_30['feature'][::-1], top_30['importance'][::-1])
     plt.xlabel("Importance")
     plt.title("Top 30 Feature Importances")
     plt.tight_layout()
@@ -459,7 +505,16 @@ def log_metric_to_bigquery(model_name, metric_name, metric_value, pipeline_uri):
     if errors:
         print(f"Error inserting row to BigQuery: {errors}")
 
+def split_categorical_by_uniqueness(df, categorical_cols, k_threshold):
+    hot_cols, cat_cols = [], []
+    for col in categorical_cols:
+        nunique = df[col].nunique()
+        if nunique <= k_threshold:
+            hot_cols.append(col)
+        else:
+            cat_cols.append(col)
+    return hot_cols, cat_cols
 
 if __name__ == "__main__":
-    study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict = ffit_all_models()
-    final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features, preprocessors_dict)
+    study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features = ffit_all_models()
+    final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features)
