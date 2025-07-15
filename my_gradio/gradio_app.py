@@ -2,7 +2,7 @@ import gradio as gr
 import pandas as pd
 import requests
 
-API_URL = "http://localhost:8001/predict/"
+API_URL = "http://api:8001/predict/"
 
 def predict_from_csv(file):
     try:
@@ -26,5 +26,4 @@ demo = gr.Interface(
     description="Upload a CSV file to get predictions from the FastAPI backend."
 )
 
-if __name__ == "__main__":
-    demo.launch()
+demo.launch(server_name="0.0.0.0", server_port=8005)

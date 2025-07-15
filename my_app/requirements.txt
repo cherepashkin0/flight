@@ -1,0 +1,9 @@
+fastapi[all]
+pandas
+joblib
+gcsfs
+scikit-learn
+lightgbm
+xgboost
+catboost
+google-cloud-bigquery
