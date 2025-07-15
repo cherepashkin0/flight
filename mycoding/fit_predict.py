@@ -215,7 +215,6 @@ def objective_catboost(trial, X_train, y_train, categorical_features, numeric_fe
     return np.mean(scores)
 
 def build_final_model(model_name, study):
-    # for model_name, study in study_dict.items():
     best_params = study.best_params
     if model_name == "lightgbm":
         final_model = lgb.LGBMClassifier(**best_params, objective='binary', random_state=42)
@@ -235,25 +234,26 @@ def build_final_model(model_name, study):
         )
     return final_model
 
-def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train, y_test, full_params):
+def train_and_log_pipeline(model_name, final_pipeline, X_train, X_test, y_train, y_test):
     final_pipeline.fit(X_train, y_train)
 
     with mlflow.start_run() as run:
         run_id = run.info.run_id
         artifact_uri = mlflow.get_artifact_uri()
-        # Log best parameters
+
+        # ✅ Extract and log all hyperparameters from trained model
+        model = final_pipeline.named_steps["classifier"]
+        full_params = model.get_params()
         mlflow.log_params(full_params)
 
         # Predict and compute metrics
         y_pred = log_model_metrics(final_pipeline, X_test, y_test, model_name, artifact_uri, run_id)
-        
+
         log_final_pipeline(final_pipeline, model_name)
 
-        # Log feature importances if available
-        if hasattr(final_pipeline.named_steps['classifier'], "feature_importances_"):
-            log_feature_importances(final_pipeline, [], today_results)  # Pass empty lists as we extract names inside
+        if hasattr(model, "feature_importances_"):
+            log_feature_importances(final_pipeline, [], today_results)
 
-    # Optionally print classification report
     print(classification_report(y_test, y_pred))
 
 def final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features):
@@ -287,22 +287,11 @@ def final_fit_track(study_dict, X_train, X_test, y_train, y_test, categorical_fe
         final_pipeline = build_pipeline(final_model, preprocessor)
 
         final_pipeline_dict[model_name] = final_pipeline
-        full_params_dict[model_name] = get_full_params(model_name, best_params)
 
     # Обучение и логгирование
     for model_name, pipeline in final_pipeline_dict.items():
         if pipeline:
-            train_and_log_pipeline(model_name, pipeline, X_train, X_test, y_train, y_test, full_params_dict[model_name])
-
-def get_full_params(model_name, best_params):
-    common_params = {'random_state': 42}
-    if model_name == 'lightgbm':
-        return {**best_params, **common_params, 'objective': 'binary'}
-    elif model_name == 'xgboost':
-        return {**best_params, **common_params, 'tree_method': 'hist', 'enable_categorical': True}
-    elif model_name == 'catboost':
-        return {**best_params, 'loss_function': 'Logloss', 'random_seed': 42, 'verbose': False}
-    return best_params
+            train_and_log_pipeline(model_name, pipeline, X_train, X_test, y_train, y_test)
 
 def preprocessor_lightgbm_make(numeric_features, hot_features, cat_features):
     numeric_transformer = Pipeline(steps=[
@@ -482,7 +471,7 @@ def log_final_pipeline(pipeline, model_name):
     # Optional: Also log as MLflow model for direct serving later
     mlflow.sklearn.log_model(
         sk_model=pipeline,
-        artifact_path=model_name + "_mlflow_model"
+        artifact_path=model_name
     )
 
 def log_metric_to_bigquery(model_name, metric_name, metric_value, pipeline_uri):
