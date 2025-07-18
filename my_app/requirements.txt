@@ -7,3 +7,4 @@ lightgbm
 xgboost
 catboost
 google-cloud-bigquery
+openpyxl
