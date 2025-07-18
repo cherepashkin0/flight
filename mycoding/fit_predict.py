@@ -107,7 +107,14 @@ def ffit_all_models():
 
     def run_study(objective_fn, model_name):
         print(f"Running study for: {model_name}")
-        study = optuna.create_study(direction="maximize")
+        study_name = config['optuna']['study_name'] + f"_{model_name}"
+        storage_path = f"sqlite:///{config['optuna']['storage_path']}"
+        study = optuna.create_study(
+            study_name=study_name,
+            direction="maximize",
+            storage=storage_path,
+            load_if_exists=True  # important!
+        )        
         study.optimize(lambda trial: objective_fn(
             trial, X_train, y_train, categorical_features, numeric_features
             ), n_trials=config['optuna']['n_trials'])

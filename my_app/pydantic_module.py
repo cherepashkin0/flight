@@ -20,7 +20,6 @@ class FlightFeatures(BaseModel):
     Quarter: int
     Dest: str
     Operating_Airline: str
-    Cancelled: bool
     IATA_Code_Marketing_Airline: str
     OriginWac: int
     DestAirportID: int

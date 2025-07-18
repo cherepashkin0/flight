@@ -1,0 +1,29 @@
+image: google/cloud-sdk:alpine
+
+services:
+  docker:dind
+
+variables:
+  SERVICE_NAME: flight
+  DOCKER_DRIVER: overlay2
+  # us-central1-docker.pkg.dev/flight-cancellation-prediction/flight
+  REGISTRY_IMAGE_API: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_app
+  VERSION_API: 0.1
+  REGISTRY_IMAGE_UI: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_gradio
+  VERSION_UI: 0.1  
+
+stages:
+  - test
+
+test:
+  stage: test
+  script:
+    - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
+    - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
+    - gcloud config set project $CI_PROJECT_ID
+    - gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_API_VERSION=$API_VERSION,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME=$SERVICE_NAME .
+  only:
+    main
+
+    # gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_CI_C OMMIT_SHA=$CI_COMMIT_SHA,_CLUSTER_NAME=$CLUSTE R_NAME,_ZONE=ŚZONE.
+

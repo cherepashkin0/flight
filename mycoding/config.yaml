@@ -2,7 +2,7 @@ project:
   name: flight_cancellation_project
   dataset: flight_data
   table: combined_flights
-  sample_size: 10000
+  sample_size: 1000000
 
 bq_logging:
   target_table: mlflow_metrics_log
@@ -13,12 +13,12 @@ output_path:
   results/
 
 optuna:
-  study_name: my_study5
-  storage: sqlite:///results/my_study5.db
-  n_trials: 2
+  study_name: fly0
+  storage_path: results/fly0.db
+  n_trials: 10
 
 cross_validation:
-  nfolds: 2
+  nfolds: 5
 mlflow:
   experiment_name: flight_cancellation_prediction
   model_name: flight_cancellation_model

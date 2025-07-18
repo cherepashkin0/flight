@@ -1,0 +1,9 @@
+services: 
+  api:
+    build: my_app
+    ports:
+      - 8006:8001
+  ui:
+    build: my_gradio
+    ports:
+      - 8998:8005
