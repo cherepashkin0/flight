@@ -4,7 +4,7 @@ import requests
 import json
 
 # Title of the app
-st.title("Flight Delay Predictor")
+st.title("Flight Cancellation Predictor")
 
 # Upload CSV file
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
@@ -28,9 +28,9 @@ if uploaded_file is not None:
                 response = requests.post(API_URL, json=records)
                 if response.status_code == 200:
                     predictions = response.json()["predictions"]
-                    # df["Prediction"] = predictions
+                    result_df = pd.DataFrame(predictions)
                     st.success("Predictions received:")
-                    st.dataframe(pd.DataFrame({"Prediction": predictions}))
+                    st.dataframe(result_df)
                 else:
                     st.error(f"Request failed: {response.status_code}\n{response.text}")
     except Exception as e:
