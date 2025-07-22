@@ -1,81 +1,41 @@
 steps:
-  # build the container image
-  
-  name: "gcr.io/cloud-builders/docker"
+  # build and push API
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "my_app", "-t", "$_REGISTRY_IMAGE_API:$_VERSION_API"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "$_REGISTRY_IMAGE_API:$_VERSION_API"]
+
+  # build and push UI
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "my_gradio", "-t", "$_REGISTRY_IMAGE_UI:$_VERSION_UI"]
+
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "$_REGISTRY_IMAGE_UI:$_VERSION_UI"]
+
+  # deploy API to Cloud Run
+  - name: "gcr.io/cloud-builders/gcloud"
     args:
       [
-        "build"
-        ,"my_app"
-        ,"-t"
-        ,"$_REGISTRY_IMAGE_API:$_VERSION_API"
+        "run", "deploy", "$_SERVICE_NAME_API",
+        "--image", "$_REGISTRY_IMAGE_API:$_VERSION_API",
+        "--region", "europe-west3",
+        "--platform", "managed",
+        "--allow-unauthenticated",
+        "--port", "8001"
       ]
 
-
-    # push the container image
-    
-  name: "gcr.io/cloud-builders/docker"
+  # deploy UI to Cloud Run
+  - name: "gcr.io/cloud-builders/gcloud"
     args:
       [
-        "push"
-        ,"$_REGISTRY_IMAGE_API:$_VERSION_API"
+        "run", "deploy", "$_SERVICE_NAME_UI",
+        "--image", "$_REGISTRY_IMAGE_UI:$_VERSION_UI",
+        "--region", "europe-west3",
+        "--platform", "managed",
+        "--allow-unauthenticated",
+        "--port", "8005"
       ]
-
-  name: "gcr.io/cloud-builders/docker"
-    args:
-      [
-        "build"
-        ,"my_gradio"
-        ,"-t"
-        ,"$_REGISTRY_IMAGE_UI:$_VERSION_UI"
-      ]
-
-
-    # push the container image
-    
-  name: "gcr.io/cloud-builders/docker"
-    args:
-      [
-        "push"
-        ,"$_REGISTRY_IMAGE_UI:$_VERSION_UI"
-      ]
-
-    # deploy to Cloud Run
-    
-  name: "gcr.io/cloud-builders/gcloud"
-    args:
-      [
-        "run"
-        , "deploy"
-        , "$_SERVICE_NAME"
-        ,"--image"
-        ,"$_REGISTRY_IMAGE_API:$_VERSION_API"
-        ,"--region"
-        , "europe-west3"
-        ,"--platform"
-        , "managed"
-        ,"--allow-unauthenticated"
-        ,"--port"
-        , "8001"
-      ]            
-      
-  name: "gcr.io/cloud-builders/gcloud"
-    args:
-      [
-        "run"
-        , "deploy"
-        , "$_SERVICE_NAME"
-        ,"--image"
-        ,"$_REGISTRY_IMAGE_UI:$_VERSION_UI"
-        ,"--region"
-        , "europe-west3"
-        ,"--platform"
-        , "managed"
-        ,"--allow-unauthenticated"
-        ,"--port"
-        , "8005"
-      ]           
 
 options:
   logging: CLOUD_LOGGING_ONLY
-
-# us-central1-docker.pkg.dev/flight-cancellation-prediction/flight

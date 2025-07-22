@@ -4,7 +4,8 @@ services:
   - docker:dind
 
 variables:
-  SERVICE_NAME: flight
+  SERVICE_NAME_API: flight-api
+  SERVICE_NAME_UI: flight-ui
   DOCKER_DRIVER: overlay2
   # us-central1-docker.pkg.dev/flight-cancellation-prediction/flight
   REGISTRY_IMAGE_API: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_app
@@ -21,9 +22,7 @@ test:
     - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
     - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
     - gcloud config set project $CI_PROJECT_ID
-    - gcloud builds submit --config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_API_VERSION=$API_VERSION,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME=$SERVICE_NAME .
+    - gcloud builds submit --config=cloudbuild.yaml \
+        --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI .
   only:
     - main
-
-    # gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_CI_C OMMIT_SHA=$CI_COMMIT_SHA,_CLUSTER_NAME=$CLUSTE R_NAME,_ZONE=ŚZONE.
-
