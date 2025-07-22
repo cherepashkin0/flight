@@ -1,6 +1,6 @@
 # Flight Cancellation Prediction Project
 
-This project aims to predict flight cancellations using machine learning models (LightGBM, CatBoost, XGBoost) and provides scripts to preprocess data, analyze it, train models, and deploy a prediction API.
+This project aims to predict flight cancellations using machine learning models (LightGBM, CatBoost, XGBoost) and provides scripts to preprocess data, analyze it, train models, finetune hyperparameters using optuna, and deploy a prediction API.
 
 ## Project Structure
 
