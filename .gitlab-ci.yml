@@ -21,7 +21,7 @@ test:
     - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
     - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
     - gcloud config set project $CI_PROJECT_ID
-    - gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_API_VERSION=$API_VERSION,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME=$SERVICE_NAME .
+    - gcloud builds submit --config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_API_VERSION=$API_VERSION,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME=$SERVICE_NAME .
   only:
     - main
 
