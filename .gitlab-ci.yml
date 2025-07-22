@@ -23,7 +23,7 @@ test:
     - gcloud config set project $CI_PROJECT_ID
     - gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_API_VERSION=$API_VERSION,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME=$SERVICE_NAME .
   only:
-    main
+    - main
 
     # gcloud builds submit -config=cloudbuild.yaml --substitutions=_REGISTRY_IMAGE=$REGISTRY_IMAGE,_CI_C OMMIT_SHA=$CI_COMMIT_SHA,_CLUSTER_NAME=$CLUSTE R_NAME,_ZONE=ŚZONE.
 
