@@ -1,24 +1,24 @@
 steps:
   # build and push API
   - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "my_app", "-t", "$_REGISTRY_IMAGE_API:$_VERSION_API"]
+    args: ["build", "my_app", "-t", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
 
   - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "$_REGISTRY_IMAGE_API:$_VERSION_API"]
+    args: ["push", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
 
   # build and push UI
   - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "my_gradio", "-t", "$_REGISTRY_IMAGE_UI:$_VERSION_UI"]
+    args: ["build", "my_gradio", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
 
   - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "$_REGISTRY_IMAGE_UI:$_VERSION_UI"]
+    args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
 
   # deploy API to Cloud Run
   - name: "gcr.io/cloud-builders/gcloud"
     args:
       [
-        "run", "deploy", "$_SERVICE_NAME_API",
-        "--image", "$_REGISTRY_IMAGE_API:$_VERSION_API",
+        "run", "deploy", "${_SERVICE_NAME_API}",
+        "--image", "${_REGISTRY_IMAGE_API}:${_VERSION_API}",
         "--region", "europe-west3",
         "--platform", "managed",
         "--allow-unauthenticated",
@@ -29,8 +29,8 @@ steps:
   - name: "gcr.io/cloud-builders/gcloud"
     args:
       [
-        "run", "deploy", "$_SERVICE_NAME_UI",
-        "--image", "$_REGISTRY_IMAGE_UI:$_VERSION_UI",
+        "run", "deploy", "${_SERVICE_NAME_UI}",
+        "--image", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}",
         "--region", "europe-west3",
         "--platform", "managed",
         "--allow-unauthenticated",
@@ -39,3 +39,4 @@ steps:
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
