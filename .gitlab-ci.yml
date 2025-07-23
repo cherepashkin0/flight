@@ -18,15 +18,15 @@ stages:
 
 test:
   stage: test
-script:
-  - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
-  - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
-  - gcloud config set project $CI_PROJECT_ID
-  - >
-    gcloud builds submit
-    --config=cloudbuild.yaml
-    --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI
-    .
-  
-only:
-  - main
+  script:
+    - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
+    - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
+    - gcloud config set project $CI_PROJECT_ID
+    - >
+      gcloud builds submit
+      --config=cloudbuild.yaml
+      --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI
+      .
+    
+  only:
+    - main
