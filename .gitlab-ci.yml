@@ -11,7 +11,9 @@ variables:
   REGISTRY_IMAGE_API: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_app
   VERSION_API: 0.1
   REGISTRY_IMAGE_UI: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_gradio
-  VERSION_UI: 0.1  
+  VERSION_UI: 0.1
+  ZONE: europe-west3-a 
+  CLUSTER_NAME: flight-cancellation-k8s 
 
 stages:
   - test
@@ -25,8 +27,10 @@ test:
     - >
       gcloud builds submit
       --config=cloudbuild.yaml
-      --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI
+      # --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI
+      --substitutions=_REGISTRY_IMAGE_API=$REGISTRY_IMAGE_API,_VERSION_API=$VERSION_API,_REGISTRY_IMAGE_UI=$REGISTRY_IMAGE_UI,_VERSION_UI=$VERSION_UI,_SERVICE_NAME_API=$SERVICE_NAME_API,_SERVICE_NAME_UI=$SERVICE_NAME_UI,_CLUSTER_NAME=$CLUSTER_NAME,_ZONE=$ZONE,_PROJECT_ID=$CI_PROJECT_ID
+
       .
-    
+
   only:
     - main

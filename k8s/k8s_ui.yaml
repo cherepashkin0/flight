@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-__PROJECT_NAME__
+  labels:
+    app: api-__PROJECT_NAME__
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-__PROJECT_NAME__
+  template:
+    metadata:
+      labels:
+        app: api-__PROJECT_NAME__
+        version: v1
+    spec:
+      volumes:
+          - name: api-__PROJECT_NAME__
+            configMap:
+              name: api-__PROJECT_NAME__ # specifies the ConfigMap to use for the volume
+      containers:
+        - name: api-__PROJECT_NAME__
+          image: __API__VERSION__
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: api-__PROJECT_NAME__
+              mountPath: /etc/nginx
+              readOnly: true
+          resources:
+            limits:
+              cpu: 1.5
+              memory: 2Gi
+            requests:
+              cpu: 0.75
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-__PROJECT_NAME__
+spec:
+  selector:
+    app: api-__PROJECT_NAME__
+  type: NodePort
+  ports:
+    - name: http
+      port: 80 # port for external access to the service
+      targetPort: 8000
+      protocol: TCP
+      nodePort: 30800 # The range of valid ports is 30000-32767
