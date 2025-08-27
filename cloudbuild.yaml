@@ -1,17 +1,17 @@
 steps:
-  # build and push API
-  - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "my_app", "-t", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
+# build and push API
+- name: "gcr.io/cloud-builders/docker"
+  args: ["build", "my_app", "-t", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
 
-  - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
+- name: "gcr.io/cloud-builders/docker"
+  args: ["push", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
 
-  # build and push UI
-  - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "my_gradio", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
+# build and push UI
+- name: "gcr.io/cloud-builders/docker"
+  args: ["build", "my_gradio", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
 
-  - name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
+- name: "gcr.io/cloud-builders/docker"
+  args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
   args:
