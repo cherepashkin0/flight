@@ -16,19 +16,19 @@ spec:
         app: api-__PROJECT_NAME__
         version: v1
     spec:
-      volumes:
-          - name: api-__PROJECT_NAME__
-            configMap:
-              name: api-__PROJECT_NAME__ # specifies the ConfigMap to use for the volume
+      # volumes:
+      #     - name: api-__PROJECT_NAME__
+      #       configMap:
+      #         name: api-__PROJECT_NAME__ # specifies the ConfigMap to use for the volume
       containers:
         - name: api-__PROJECT_NAME__
           image: __API__VERSION__
           ports:
             - containerPort: 8001
-          volumeMounts:
-            - name: api-__PROJECT_NAME__
-              mountPath: /etc/nginx
-              readOnly: true
+          # volumeMounts:
+          #   - name: api-__PROJECT_NAME__
+          #     mountPath: /etc/nginx
+          #     readOnly: true
           resources:
             limits:
               cpu: 1.5
