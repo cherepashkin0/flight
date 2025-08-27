@@ -1,7 +1,7 @@
 image: google/cloud-sdk:alpine
 
-services:
-  - docker:dind
+# services:
+#   - docker:dind
 
 variables:
   SERVICE_NAME_API: flight-api
@@ -13,7 +13,7 @@ variables:
   REGISTRY_IMAGE_UI: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_gradio
   VERSION_UI: 0.1
   ZONE: europe-west3-a 
-  CLUSTER_NAME: flight-cancellation-k8s
+  CLUSTER_NAME: flight-k8s
 
 stages:
   - test
@@ -21,7 +21,7 @@ stages:
 test:
   stage: test
   script:
-    - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
+    - echo $GCP_SERVICE_ACCOUNT_KEY > /tmp/keyfile.json
     - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
     - gcloud config set project $CI_PROJECT_ID
     - >
