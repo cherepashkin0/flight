@@ -7,7 +7,7 @@ metadata:
     app: ui-__PROJECT_NAME__ # key-value pairs that can be used to organize and select resources
     version: v1
 spec: # defines the desired state for the deployment
-  replicas: 2 # specifies that 3 replicas (pods) of the application should be running
+  replicas: 1 # specifies that 3 replicas (pods) of the application should be running
   selector:
     matchLabels:
       app: ui-__PROJECT_NAME__ # criteria for selecting the pods that this deployment will manage (it selects pods with the label app: web)
@@ -17,26 +17,26 @@ spec: # defines the desired state for the deployment
         app: ui-__PROJECT_NAME__ # labels assigned to the pods created by this deployment (must match the selector labels)
         version: v1
     spec: # defines the specification for the pod template
-      volumes:
-        - name: ui-__PROJECT_NAME__
-          configMap:
-            name: ui-__PROJECT_NAME__ # specifies the ConfigMap to use for the volume
+      # volumes:
+      #   - name: ui-__PROJECT_NAME__
+      #     configMap:
+      #       name: ui-__PROJECT_NAME__ # specifies the ConfigMap to use for the volume
       containers: # lists the containers that will be running inside the pods
         - name: ui-__PROJECT_NAME__ # the name of the container
           image: __UI__VERSION__ # the Docker image used for this container
           ports:
             - containerPort: 8005 # specifies that port 80 should be exposed on the container
-          volumeMounts:
-            - name: ui-__PROJECT_NAME__
-              mountPath: /etc/nginx
-              readOnly: true  
+          # volumeMounts:
+          #   - name: ui-__PROJECT_NAME__
+          #     mountPath: /etc/nginx
+          #     readOnly: true  
           resources:
             limits:
-              cpu: 1.5
-              memory: 2Gi
+              cpu: 0.2
+              memory: 512Mi
             requests:
-              cpu: 0.75
-              memory: 1Gi
+              cpu: 0.1
+              memory: 256Mi
 
 ---
 apiVersion: v1 # specifies the API version for the Service resource

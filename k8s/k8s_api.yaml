@@ -6,7 +6,7 @@ metadata:
     app: api-__PROJECT_NAME__
     version: v1
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: api-__PROJECT_NAME__
@@ -31,11 +31,11 @@ spec:
           #     readOnly: true
           resources:
             limits:
-              cpu: 1.5
-              memory: 2Gi
+              cpu: 0.2
+              memory: 512Mi
             requests:
-              cpu: 0.75
-              memory: 1Gi
+              cpu: 0.1
+              memory: 256Mi
 ---
 apiVersion: v1
 kind: Service
