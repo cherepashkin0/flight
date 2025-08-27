@@ -21,7 +21,7 @@ stages:
 test:
   stage: test
   script:
-    - echo $GCP_SERVICE_ACCOUNT_KEY > /tmp/keyfile.json
+    - cp $GCP_SERVICE_ACCOUNT_KEY /tmp/keyfile.json
     - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
     - gcloud config set project $CI_PROJECT_ID
     - >
