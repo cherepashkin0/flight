@@ -4,7 +4,9 @@ import requests
 import tempfile
 import os
 
-API_URL = "https://flight-ui-965610336649.europe-west3.run.app/predict/"
+# API_URL = "https://flight-ui-965610336649.europe-west3.run.app/predict/"
+API_URL = "http://api-flight/predict/"
+# API_URL = "http://api:8001/predict/"
 
 def predict_from_file(file):
     try:

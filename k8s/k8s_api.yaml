@@ -6,7 +6,7 @@ metadata:
     app: api-__PROJECT_NAME__
     version: v1
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: api-__PROJECT_NAME__

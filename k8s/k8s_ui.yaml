@@ -7,7 +7,7 @@ metadata:
     app: ui-__PROJECT_NAME__ # key-value pairs that can be used to organize and select resources
     version: v1
 spec: # defines the desired state for the deployment
-  replicas: 1 # specifies that 3 replicas (pods) of the application should be running
+  replicas: 2 # specifies that 3 replicas (pods) of the application should be running
   selector:
     matchLabels:
       app: ui-__PROJECT_NAME__ # criteria for selecting the pods that this deployment will manage (it selects pods with the label app: web)

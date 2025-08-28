@@ -15,7 +15,7 @@ app = FastAPI()
 BQ_PROJECT = "flight-cancellation-prediction"
 BQ_DATASET = "mlflow_tracking"
 BQ_TABLE = "mlflow_metrics_log"
-TARGET_PROJECT_NAME = "flight_cancellation_prediction"
+TARGET_PROJECT_NAME = "flight_cancellation_project"
 
 
 
@@ -25,7 +25,7 @@ def get_best_model_uri():
     query = f"""
         SELECT pipeline_uri
         FROM `{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}`
-        WHERE project_name = 'flight_cancellation_project'
+        WHERE project_name = @project_name
         AND metric_name = 'f2_score'
         ORDER BY metric_value DESC
         LIMIT 1
