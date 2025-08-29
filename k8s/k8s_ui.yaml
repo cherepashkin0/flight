@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: ui
-          image: gcr.io/flight-cancellation-prediction/flight-ui:latest
+          image: __API__VERSION__          
           ports:
             - containerPort: 8005
               protocol: TCP

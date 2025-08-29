@@ -15,8 +15,7 @@ app = FastAPI()
 BQ_PROJECT = "flight-cancellation-prediction"
 BQ_DATASET = "mlflow_tracking"
 BQ_TABLE = "mlflow_metrics_log"
-TARGET_PROJECT_NAME = "flight_cancellation_project"
-
+TARGET_PROJECT_NAME = os.getenv("TARGET_PROJECT_NAME", "flight_cancellation_project")
 
 
 def get_best_model_uri():
@@ -46,26 +45,22 @@ def get_best_model_uri():
 
     raise RuntimeError("No model found for the specified project.")
 
+pipeline = None
+preprocessor = None
+
 def load_pipeline():
     global pipeline, preprocessor
-    if pipeline is None:
-        GCS_URI = get_best_model_uri()
-        fs = gcsfs.GCSFileSystem()
-        with fs.open(GCS_URI, "rb") as f:
-            buffer = io.BytesIO(f.read())
-            pipeline = joblib.load(buffer)
-            preprocessor = getattr(pipeline, "named_steps", {}).get("preprocessor", None)
+    if pipeline is not None:
+        return pipeline
+    GCS_URI = get_best_model_uri()
+    fs = gcsfs.GCSFileSystem()
+    with fs.open(GCS_URI, "rb") as f:
+        buffer = io.BytesIO(f.read())
+        p = joblib.load(buffer)
+    # cache
+    pipeline = p
+    preprocessor = getattr(pipeline, "named_steps", {}).get("preprocessor", None)
     return pipeline
-
-try:
-    pipeline = None
-    preprocessor = None
-    pipeline = load_pipeline()
-
-    # preprocessor = getattr(pipeline, "named_steps", {}).get("preprocessor", None)
-
-except Exception as e:
-    raise RuntimeError(f"Pipeline could not be loaded: {e}")
 
 
 @app.post("/predict/xlsx/")
@@ -102,22 +97,21 @@ def explain_usage():
 @app.post("/predict/")
 def predict(data: List[FlightFeatures]):
     try:
-        # Convert incoming JSON list to pandas DataFrame
+        p = load_pipeline()  # load on demand
         df = pd.DataFrame([record.model_dump() for record in data])
-        
-        # Make predictions
-        predictions = pipeline.predict(df).tolist()
-        
-        # Add predictions to the DataFrame
-        df["prediction"] = predictions
-        
-        # Convert back to list of dicts for JSON response
+        preds = p.predict(df).tolist()
+        df["prediction"] = preds
         return JSONResponse(content={"predictions": df.to_dict(orient="records")})
-    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+        raise HTTPException(status_code=503, detail=f"Prediction temporarily unavailable: {e}")
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    # App is alive even if model isn't loaded yet
+    # Optionally try a non-fatal model touch:
+    try:
+        _ = pipeline  # do not force load here
+        return {"status": "ok", "model_loaded": bool(pipeline)}
+    except Exception:
+        return {"status": "ok", "model_loaded": False}

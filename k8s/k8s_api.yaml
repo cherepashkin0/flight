@@ -28,17 +28,19 @@ spec:
       serviceAccountName: api-sa
       containers:
         - name: api
-          image: gcr.io/flight-cancellation-prediction/flight-api:latest
+          image: __API__VERSION__
           ports:
             - containerPort: 8001
               protocol: TCP
           env:
+            - name: TARGET_PROJECT_NAME
+              value: "flight_cancellation_project"          
             - name: BQ_PROJECT
               value: "flight-cancellation-prediction"
             - name: BQ_DATASET
               value: "mlflow_tracking"
             - name: BQ_LOCATION
-              value: "EU"  # or europe-west3 (must match your dataset)
+              value: "US"  # or europe-west3 (must match your dataset)
           resources:
             requests: { cpu: "100m", memory: "256Mi" }
             limits:   { cpu: "200m", memory: "512Mi" }
