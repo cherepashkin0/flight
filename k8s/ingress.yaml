@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: flight-ingress
+  namespace: prod
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    # Optional: use a reserved global static IP (create first, see commands below)
+    kubernetes.io/ingress.global-static-ip-name: "flight-ingress-ip"
+    # Optional: managed certificate by host (uncomment + create ManagedCertificate below)
+    # networking.gke.io/managed-certificates: flight-cert
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-flight
+                port:
+                  number: 80
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ui-flight
+                port:
+                  number: 80
