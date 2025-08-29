@@ -1,6 +1,6 @@
 # Flight Cancellation Prediction Project
 
-This project aims to predict flight cancellations using machine learning models (LightGBM, CatBoost, XGBoost) and provides scripts to preprocess data, analyze it, train models, finetune hyperparameters using optuna, and deploy a prediction API.
+This project aims to predict flight cancellations using machine learning models (LightGBM, CatBoost, XGBoost) and provides scripts to preprocess data, analyze it, train models, finetune hyperparameters using optuna, and deploy a prediction API and UI (streamlit and gradio). Deployment is supported on Google Kubernetes Engine (GKE) and via Google Cloud Build, triggered from GitLab CI (containers pushed to Artifact Registry).
 
 ## Project Structure
 
@@ -12,7 +12,10 @@ This project aims to predict flight cancellations using machine learning models 
 │   └── pydantic_module.py # Generated Pydantic models
 │
 ├── my_streamlit           # Streamlit application for UI
-│   └── streamlit_predictor
+│   └── steamlit_app.py
+│
+├── my_gradio           # Streamlit application for UI
+│   └── gradio_app.py
 │
 └── mycoding               # Main ML scripts and utilities
     ├── config.yaml        # Project configuration
@@ -27,6 +30,7 @@ This project aims to predict flight cancellations using machine learning models 
 
 ### Requirements
 - Python 3.11
+- requirements.txt
 - Google Cloud Platform account with BigQuery enabled
 - MLflow server for experiment tracking
 
