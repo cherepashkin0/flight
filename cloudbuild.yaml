@@ -12,19 +12,14 @@ steps:
 
 - name: "gcr.io/cloud-builders/docker"
   args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
-
-# Deploy to GKE с расширенной диагностикой
 - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
   entrypoint: bash
   args:
     - '-c'
     - |
-      set -e
-      echo "=== Connecting to GKE cluster ==="
       gcloud container clusters get-credentials "$_CLUSTER_NAME" \
         --zone "$_ZONE" --project "$_PROJECT_ID"
 
-      echo "=== Replacing placeholders in YAML files ==="
       find k8s -type f -name '*.yaml' -print0 | while IFS= read -r -d '' f; do
         sed -i \
           -e "s|__PROJECT_NAME__|${_PROJECT_NAME}|g" \
@@ -33,42 +28,33 @@ steps:
           "$f"
       done
 
-      echo "=== Creating/checking namespace ==="
       kubectl get ns "${_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${_NAMESPACE}"
-      
-      echo "=== Applying Kubernetes manifests ==="
       kubectl -n "${_NAMESPACE}" apply -R -f ./k8s/
-      
-      echo "=== Waiting for deployments to be ready ==="
-      kubectl -n "${_NAMESPACE}" wait --for=condition=available --timeout=300s \
-        deployment/api-${_PROJECT_NAME} deployment/ui-${_PROJECT_NAME}
-      
-      echo "=== Current state of resources ==="
-      kubectl -n "${_NAMESPACE}" get deploy,svc,pods,ingress -o wide
-      
-      echo "=== Service details ==="
-      kubectl -n "${_NAMESPACE}" describe svc api-${_PROJECT_NAME}
-      kubectl -n "${_NAMESPACE}" describe svc ui-${_PROJECT_NAME}
-      
-      echo "=== Checking LoadBalancer status ==="
-      for i in {1..30}; do
-        echo "Attempt $i/30 - Checking external IPs..."
-        EXTERNAL_IPS=$(kubectl -n "${_NAMESPACE}" get svc -o jsonpath='{range .items[?(@.spec.type=="LoadBalancer")]}{.metadata.name}: {.status.loadBalancer.ingress[0].ip}{"\n"}{end}')
-        if [ -n "$EXTERNAL_IPS" ]; then
-          echo "External IPs assigned:"
-          echo "$EXTERNAL_IPS"
-          break
-        fi
-        sleep 10
-      done
-      
-      echo "=== Events from namespace ==="
-      kubectl -n "${_NAMESPACE}" get events --sort-by='.lastTimestamp' | tail -20
-      
-      echo "=== Final service status ==="
-      kubectl -n "${_NAMESPACE}" get svc -o wide
+      kubectl -n "${_NAMESPACE}" get deploy,svc,pods -o wide
+  # # deploy API to Cloud Run
+  # - name: "gcr.io/cloud-builders/gcloud"
+  #   args:
+  #     [
+  #       "run", "deploy", "${_SERVICE_NAME_API}",
+  #       "--image", "${_REGISTRY_IMAGE_API}:${_VERSION_API}",
+  #       "--region", "europe-west3",
+  #       "--platform", "managed",
+  #       "--allow-unauthenticated",
+  #       "--port", "8001"
+  #     ]
+
+  # # deploy UI to Cloud Run
+  # - name: "gcr.io/cloud-builders/gcloud"
+  #   args:
+  #     [
+  #       "run", "deploy", "${_SERVICE_NAME_UI}",
+  #       "--image", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}",
+  #       "--region", "europe-west3",
+  #       "--platform", "managed",
+  #       "--allow-unauthenticated",
+  #       "--port", "8005"
+  #     ]
 
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: 'N1_HIGHCPU_8'  # Используем более мощную машину для ускорения билда
-timeout: 1200s  # 20 минут таймаут
+
