@@ -1,59 +1,59 @@
 steps:
-# build and push API
-- name: "gcr.io/cloud-builders/docker"
-  args: ["build", "-t", "${_REGISTRY_IMAGE_API}:${_VERSION_API}", "my_app"]
+# # build and push API
+# - name: "gcr.io/cloud-builders/docker"
+#   args: ["build", "-t", "${_REGISTRY_IMAGE_API}:${_VERSION_API}", "my_app"]
 
-- name: "gcr.io/cloud-builders/docker"
-  args: ["push", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
+# - name: "gcr.io/cloud-builders/docker"
+#   args: ["push", "${_REGISTRY_IMAGE_API}:${_VERSION_API}"]
 
-# build and push UI
-- name: "gcr.io/cloud-builders/docker"
-  args: ["build", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}", "my_gradio"]
+# # build and push UI
+# - name: "gcr.io/cloud-builders/docker"
+#   args: ["build", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}", "my_gradio"]
 
-- name: "gcr.io/cloud-builders/docker"
-  args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: bash
-  args:
-    - '-c'
-    - |
-      gcloud container clusters get-credentials "$_CLUSTER_NAME" \
-        --zone "$_ZONE" --project "$_PROJECT_ID"
+# - name: "gcr.io/cloud-builders/docker"
+#   args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
+# - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+#   entrypoint: bash
+#   args:
+#     - '-c'
+#     - |
+#       gcloud container clusters get-credentials "$_CLUSTER_NAME" \
+#         --zone "$_ZONE" --project "$_PROJECT_ID"
 
-      find k8s -type f -name '*.yaml' -print0 | while IFS= read -r -d '' f; do
-        sed -i \
-          -e "s|__PROJECT_NAME__|${_PROJECT_NAME}|g" \
-          -e "s|__API__VERSION__|${_REGISTRY_IMAGE_API}:${_VERSION_API}|g" \
-          -e "s|__UI__VERSION__|${_REGISTRY_IMAGE_UI}:${_VERSION_UI}|g" \
-          "$f"
-      done
+#       find k8s -type f -name '*.yaml' -print0 | while IFS= read -r -d '' f; do
+#         sed -i \
+#           -e "s|__PROJECT_NAME__|${_PROJECT_NAME}|g" \
+#           -e "s|__API__VERSION__|${_REGISTRY_IMAGE_API}:${_VERSION_API}|g" \
+#           -e "s|__UI__VERSION__|${_REGISTRY_IMAGE_UI}:${_VERSION_UI}|g" \
+#           "$f"
+#       done
 
-      kubectl get ns "${_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${_NAMESPACE}"
-      kubectl -n "${_NAMESPACE}" apply -R -f ./k8s/
-      kubectl -n "${_NAMESPACE}" get deploy,svc,pods -o wide
-  # # deploy API to Cloud Run
-  # - name: "gcr.io/cloud-builders/gcloud"
-  #   args:
-  #     [
-  #       "run", "deploy", "${_SERVICE_NAME_API}",
-  #       "--image", "${_REGISTRY_IMAGE_API}:${_VERSION_API}",
-  #       "--region", "europe-west3",
-  #       "--platform", "managed",
-  #       "--allow-unauthenticated",
-  #       "--port", "8001"
-  #     ]
+#       kubectl get ns "${_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${_NAMESPACE}"
+#       kubectl -n "${_NAMESPACE}" apply -R -f ./k8s/
+#       kubectl -n "${_NAMESPACE}" get deploy,svc,pods -o wide
+  # deploy API to Cloud Run
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "run", "deploy", "${_SERVICE_NAME_API}",
+        "--image", "${_REGISTRY_IMAGE_API}:${_VERSION_API}",
+        "--region", "europe-west3",
+        "--platform", "managed",
+        "--allow-unauthenticated",
+        "--port", "8001"
+      ]
 
-  # # deploy UI to Cloud Run
-  # - name: "gcr.io/cloud-builders/gcloud"
-  #   args:
-  #     [
-  #       "run", "deploy", "${_SERVICE_NAME_UI}",
-  #       "--image", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}",
-  #       "--region", "europe-west3",
-  #       "--platform", "managed",
-  #       "--allow-unauthenticated",
-  #       "--port", "8005"
-  #     ]
+  # deploy UI to Cloud Run
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "run", "deploy", "${_SERVICE_NAME_UI}",
+        "--image", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}",
+        "--region", "europe-west3",
+        "--platform", "managed",
+        "--allow-unauthenticated",
+        "--port", "8005"
+      ]
 
 options:
   logging: CLOUD_LOGGING_ONLY

@@ -10,8 +10,10 @@ st.title("Flight Cancellation Predictor")
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
 # Define FastAPI backend URL
-# API_URL = "http://localhost:8001/predict/"
-API_URL = "http://api-flight/predict/"
+# to run over docker
+API_URL = "http://api:8001/predict/"
+# to run over kubernetes
+# API_URL = "http://api-flight/predict/"
 # API_URL = "http://api:8001/predict/"
 
 if uploaded_file is not None:
