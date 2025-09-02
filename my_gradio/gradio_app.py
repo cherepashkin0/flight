@@ -48,7 +48,7 @@ def predict_from_file(file):
 
 
 with gr.Blocks(title="Flight Delay Predictor") as demo:
-    gr.Markdown("## Flight Delay Predictor\nUpload a CSV or XLSX file to get predictions (True/False).")
+    gr.Markdown("## Flight Delay Predictor\nUpload a CSV or XLSX file to get predictions (True/False). Updated for Cloud Run.")
 
     with gr.Row():
         file_input = gr.File(label="Upload your CSV or XLSX file")
