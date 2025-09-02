@@ -4,11 +4,12 @@ import requests
 import tempfile
 import os
 
-# API_URL = "https://flight-ui-965610336649.europe-west3.run.app/predict/"
+# For Cloud Run deployment - replace with actual service URL
+API_URL = "https://flight-api-965610336649.europe-west3.run.app/predict/"
 # to run over k8s
 # API_URL = "http://api-flight/predict/"
 # to run over docker
-API_URL = "http://api:8001/predict/"
+# API_URL = "http://api:8001/predict/"
 
 def predict_from_file(file):
     try:
