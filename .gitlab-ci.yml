@@ -9,9 +9,9 @@ variables:
   DOCKER_DRIVER: overlay2
   # us-central1-docker.pkg.dev/flight-cancellation-prediction/flight
   REGISTRY_IMAGE_API: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_app
-  VERSION_API: 0.1
+  VERSION_API: 0.12
   REGISTRY_IMAGE_UI: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_gradio
-  VERSION_UI: 0.1
+  VERSION_UI: 0.12
   ZONE: europe-west3-a 
   CLUSTER_NAME: flight-k8s
   PROJECT_NAME: flight
