@@ -1,24 +1,23 @@
-version: "3.9"
-
+version: "3.91"
 services:
-  api:
+  api-flight:  # Changed from 'api' to 'api-flight'
     build: my_app
     ports:
       - 8006:8001
     container_name: flight_api
-
+  
   ui:
     build: my_gradio
     ports:
       - 8998:8005
     container_name: gradio_ui
     depends_on:
-      - api
-
+      - api-flight  # Update dependency name too
+  
   streamlit:
     build: my_streamlit
     ports:
       - 8501:8501
     container_name: streamlit_ui
     depends_on:
-      - api
+      - api-flight  # Update dependency name too
