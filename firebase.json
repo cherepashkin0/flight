@@ -1,0 +1,15 @@
+{
+  "hosting": {
+    "public": "public",
+    "ignore": ["**/.*"],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "flight-ui",
+          "region": "europe-west3"
+        }
+      }
+    ]
+  }
+}

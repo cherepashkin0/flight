@@ -13,8 +13,8 @@ output_path:
   results/
 
 optuna:
-  study_name: fly0
-  storage_path: results/fly0.db
+  study_name: fly1
+  storage_path: results/fly1.db
   n_trials: 10
 
 cross_validation:

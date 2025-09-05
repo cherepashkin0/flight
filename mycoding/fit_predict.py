@@ -54,14 +54,38 @@ def get_col_roles():
         dct_cols[key] = describe_df.loc[describe_df['Role'] == key, 'Column_Name'].sort_values().tolist()
     return dct_cols
 
-def data_load_from_bigquery(dct_cols):
+def data_load_from_bigquery(dct_cols, sample_size=None):
     all_columns = [col for cols in dct_cols.values() for col in cols]    
     client = bigquery.Client(project=project_id)
-    query = f"""
-            SELECT {", ".join(all_columns)}
+    
+    # СБАЛАНСИРОВАННАЯ ВЫБОРКА
+    if sample_size:
+        query = f"""
+        WITH balanced_sample AS (
+            SELECT *, 
             FROM `{table_id}`
-            LIMIT {SAMPLE_SIZE}
-            """
+            WHERE Cancelled = 1
+            ORDER BY RAND()
+            LIMIT {sample_size // 10}  -- 10% отмен
+        ),
+        normal_sample AS (
+            SELECT *, 
+            FROM `{table_id}`
+            WHERE Cancelled = 0
+            ORDER BY RAND()
+            LIMIT {sample_size - (sample_size // 10)}  -- 90% обычных
+        )
+        SELECT {", ".join(all_columns)}
+        FROM (
+            SELECT * FROM balanced_sample
+            UNION ALL
+            SELECT * FROM normal_sample
+        )
+        ORDER BY RAND()
+        """
+    else:
+        query = f"SELECT {', '.join(all_columns)} FROM `{table_id}`"
+    
     df = client.query(query).to_dataframe(create_bqstorage_client=True)
     return df
 
@@ -135,24 +159,33 @@ def objective_lightgbm(trial, X_train, y_train, categorical_features, numeric_fe
     hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
     preprocessor = preprocessor_lightgbm_make(numeric_features, hot_cols, cat_cols)
 
+    class_ratio = y_train.value_counts()[0] / y_train.value_counts()[1]
+    
     params = {
         'objective': 'binary',
         'metric': 'binary_logloss',
         'boosting_type': 'gbdt',
-        'num_leaves': trial.suggest_int('num_leaves', 2, 32, log=True),
+        'num_leaves': trial.suggest_int('num_leaves', 10, 100),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'learning_rate': trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
         'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),
         'bagging_fraction': trial.suggest_float('bagging_fraction', 0.6, 1.0),
         'bagging_freq': trial.suggest_int('bagging_freq', 1, 10),
         'lambda_l1': trial.suggest_float('lambda_l1', 1e-5, 10.0, log=True),
         'lambda_l2': trial.suggest_float('lambda_l2', 1e-5, 10.0, log=True),
+        
+        # КРИТИЧНО: ОБРАБОТКА ДИСБАЛАНСА
+        'scale_pos_weight': class_ratio,
+        'is_unbalance': True,
+        
         'verbosity': -1,
         'seed': 42
     }
+    
     model = lgb.LGBMClassifier(**params)
     pipeline = build_pipeline(model, preprocessor)
-
+    
+    # СТРАТИФИЦИРОВАННАЯ КРОСС-ВАЛИДАЦИЯ
     cv = StratifiedKFold(n_splits=config['cross_validation']['nfolds'], shuffle=True, random_state=42)
     scores = []
     for train_idx, val_idx in cv.split(X_train, y_train):
@@ -166,16 +199,21 @@ def objective_xgboost(trial, X_train, y_train, categorical_features, numeric_fea
     k_threshold = trial.suggest_int("k_unique_threshold", 0, 8)
     hot_cols, cat_cols = split_categorical_by_uniqueness(X_train, categorical_features, k_threshold)
     preprocessor = preprocessor_xgboost_make(numeric_features, hot_cols, cat_cols)
+    
+    # ОБРАБОТКА ДИСБАЛАНСА
+    class_ratio = y_train.value_counts()[0] / y_train.value_counts()[1]
+    
     params = {
         'objective': 'binary:logistic',
         'eval_metric': 'logloss',
         'booster': 'gbtree',
-        'eta': trial.suggest_float('eta', 1e-4, 1e-1, log=True),
+        'eta': trial.suggest_float('eta', 0.01, 0.3, log=True),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
         'lambda': trial.suggest_float('lambda', 1e-5, 10.0, log=True),
         'alpha': trial.suggest_float('alpha', 1e-5, 10.0, log=True),
+        'scale_pos_weight': class_ratio,
         'use_label_encoder': False,
         'verbosity': 0,
         'tree_method': 'hist',
@@ -319,19 +357,25 @@ def preprocessor_lightgbm_make(numeric_features, hot_features, cat_features):
 
 def preprocessor_xgboost_make(numeric_features, hot_features, cat_features):
     numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
         ('scaler', StandardScaler())
     ])
+    
     hot_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
         ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
     ])
+    
+    # ДЛЯ XGBOOST: НЕ КОДИРУЕМ КАТЕГОРИИ, ОСТАВЛЯЕМ СТРОКАМИ
     cat_transformer = Pipeline(steps=[
-        ('ordinal', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
+        ('imputer', SimpleImputer(strategy='constant', fill_value='missing')),
+        ('converter', FunctionTransformer(lambda x: x.astype(str), validate=False))
     ])
 
     return ColumnTransformer(transformers=[
         ('num', numeric_transformer, numeric_features),
         ('hot', hot_transformer, hot_features),
-        ('cat', cat_transformer, cat_features)
+        ('cat', cat_transformer, cat_features)  # Строки для XGBoost!
     ])
 
 def preprocessor_catboost_make(numeric_features, categorical_features):
@@ -362,8 +406,21 @@ def train_pipeline(pipeline, X_tr, y_tr, categorical_features, model_name):
     return pipeline
 
 def evaluate_pipeline(pipeline, X_val, y_val):
-    y_pred = pipeline.predict(X_val)
-    return fbeta_score(y_val, y_pred, beta=2.0)
+    y_pred_proba = pipeline.predict_proba(X_val)[:, 1]
+    
+    # НАЙТИ ОПТИМАЛЬНЫЙ ПОРОГ ДЛЯ F2
+    precision_vals, recall_vals, thresholds = precision_recall_curve(y_val, y_pred_proba)
+    f2_scores = []
+    
+    for threshold in thresholds:
+        y_pred = (y_pred_proba >= threshold).astype(int)
+        if len(np.unique(y_pred)) > 1:  # Избежать деления на ноль
+            f2 = fbeta_score(y_val, y_pred, beta=2.0)
+            f2_scores.append(f2)
+        else:
+            f2_scores.append(0)
+    
+    return max(f2_scores) if f2_scores else 0
 
 def extract_feature_names(preprocessor, numeric_features, categorical_features):
     """
@@ -510,6 +567,17 @@ def split_categorical_by_uniqueness(df, categorical_cols, k_threshold):
         else:
             cat_cols.append(col)
     return hot_cols, cat_cols
+
+def analyze_class_distribution(y_train, y_test):
+    print("=== АНАЛИЗ ДИСБАЛАНСА КЛАССОВ ===")
+    print(f"Train distribution:")
+    print(y_train.value_counts(normalize=True))
+    print(f"Test distribution:")
+    print(y_test.value_counts(normalize=True))
+    
+    pos_weight = y_train.value_counts()[0] / y_train.value_counts()[1]
+    print(f"Recommended scale_pos_weight: {pos_weight:.2f}")
+    return pos_weight
 
 if __name__ == "__main__":
     study_dict, X_train, X_test, y_train, y_test, categorical_features, numeric_features = ffit_all_models()
