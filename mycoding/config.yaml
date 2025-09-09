@@ -4,6 +4,7 @@ project:
   table: combined_flights
   sample_size: 10000
 
+# flight-cancellation-pred.mlflow_tracking.mlflow_metrics_log
 bq_logging:
   target_table: mlflow_metrics_log
   dataset: mlflow_tracking
