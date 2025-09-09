@@ -15,9 +15,9 @@ drafts/
 mycoding/drafts/
 mycoding/catboost_info/
 mycoding/mlruns/
-mycoding/results/
+mycoding/draft_results/
+mycoding/logs/
 mycoding/sampled_rows/
 my_app/drafts/
 mlruns/
 mycoding/preprocess_time_cols.sql
-
