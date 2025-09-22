@@ -13,7 +13,9 @@ dataset_name = 'flight_data'
 table_name = 'combined_flights'
 table_id = f'{project_id}.{dataset_name}.{table_name}'
 
-PIPELINE_URI = "gs://mlflow_flight_cancellation/artifacts/0/addea66c90a04e6dbc9c09412ac8df26/artifacts/catboost_pipeline.pkl"
+# PIPELINE_URI = "gs://mlflow_flight_cancellation/artifacts/0/addea66c90a04e6dbc9c09412ac8df26/artifacts/catboost_pipeline.pkl"
+PIPELINE_URI = "gs://mlflow_flight_cancellation3/artifacts/1/models/m-6590d7d9bdd14b14a8117e4fcb06ce7b/artifacts/model.pkl"
+
 ROLE_PATH = "training_taken_roles.json"
 SAMPLES_PER_CLASS = 5
 output_dir = 'sampled_rows'
