@@ -43,10 +43,25 @@ dataset_name = config['project']['dataset']
 table_id = f'{project_id}.{dataset_name}.{table_name}'
 
 def get_numeric_columns():
-    """Get only numeric columns from the describe CSV"""
+    """Get numeric columns from the describe CSV, excluding skip_additional columns"""
     describe_df = pd.read_csv(config['data']['describe_csv_path'])
     numeric_cols = describe_df.loc[describe_df['Role'] == 'num', 'Column_Name'].tolist()
     target_col = describe_df.loc[describe_df['Role'] == 'tgt', 'Column_Name'].tolist()[0]
+    
+    # NEW: Get skip columns from config and filter them out
+    skip_cols = config.get('columns', {}).get('skip_additional', [])
+    logger.info(f"Columns to skip from config: {skip_cols}")
+    
+    # Filter out skip columns from numeric columns
+    original_count = len(numeric_cols)
+    numeric_cols = [col for col in numeric_cols if col not in skip_cols]
+    skipped_count = original_count - len(numeric_cols)
+    
+    logger.info(f"Filtered out {skipped_count} columns. Using {len(numeric_cols)} numeric features.")
+    if skipped_count > 0:
+        skipped_numeric = [col for col in skip_cols if col in describe_df.loc[describe_df['Role'] == 'num', 'Column_Name'].tolist()]
+        logger.info(f"Actually skipped numeric columns: {skipped_numeric}")
+    
     return numeric_cols, target_col
 
 # NEW: build mapping {column: role} filtered to used columns; keep CSV order
@@ -196,6 +211,11 @@ def train_final_model(best_params, X_train, X_test, y_train, y_test, numeric_col
         # Log parameters
         mlflow.log_params(best_params)
         
+        # NEW: Log skip columns as parameter for traceability
+        skip_cols = config.get('columns', {}).get('skip_additional', [])
+        mlflow.log_param("skip_additional_columns", skip_cols)
+        mlflow.log_param("num_features_used", len(numeric_cols))
+        
         # Log metrics
         mlflow.log_metric("f2_score", f2_score)
         
@@ -257,9 +277,9 @@ def main():
     try:
         logger.info("=== Starting ML Pipeline ===")
         
-        # Get numeric columns
+        # Get numeric columns (now with skip filtering)
         numeric_cols, target_col = get_numeric_columns()
-        logger.info(f"Using {len(numeric_cols)} numeric features")
+        logger.info(f"Using {len(numeric_cols)} numeric features after filtering skip_additional columns")
         
         # Build roles mapping ONLY for used columns (numeric + target)
         used_columns = list(numeric_cols) + [target_col]  # what model really sees
