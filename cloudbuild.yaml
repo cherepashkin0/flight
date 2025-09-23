@@ -37,7 +37,7 @@ steps:
       [
         "run", "deploy", "${_SERVICE_NAME_API}",
         "--image", "${_REGISTRY_IMAGE_API}:${_VERSION_API}",
-        "--region", "europe-west3",
+        "--region", "europe-west4",
         "--platform", "managed",
         "--allow-unauthenticated",
         "--port", "8001"
@@ -49,7 +49,7 @@ steps:
       [
         "run", "deploy", "${_SERVICE_NAME_UI}",
         "--image", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}",
-        "--region", "europe-west3",
+        "--region", "europe-west4",
         "--platform", "managed",
         "--allow-unauthenticated",
         "--port", "8005"
