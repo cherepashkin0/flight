@@ -23,6 +23,7 @@ This project aims to predict flight cancellations using machine learning models 
     ├── fit_predict.py     # ML pipeline with model training and evaluation
     ├── parquet_to_bigquery.py # Load Parquet files into BigQuery
     ├── role_assign.py     # Assign roles to dataset columns
+    ├── make_one_csv.py    # Prepare sample data for uploading to the app    
     └── results            # Output data and analysis results
 ```
 
