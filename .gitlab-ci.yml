@@ -1,3 +1,9 @@
+script:
+  - echo "CI_PROJECT_ID variable value: $CI_PROJECT_ID"
+  - echo "All CI variables containing 'project':"
+  - env | grep -i project
+  - gcloud config set project $CI_PROJECT_ID
+  
 image: google/cloud-sdk:alpine
 
 # services:
