@@ -16,7 +16,7 @@ uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 # API_URL = "http://api-flight/predict/"
 # API_URL = "http://api:8001/predict/"
 # For Cloud Run deployment - replace with actual service URL
-API_URL = "https://flight-api-965610336649.europe-west3.run.app/predict/"
+API_URL = "https://flight-api-330145081433.europe-west4.run.app/predict/"
 
 if uploaded_file is not None:
     try:
