@@ -1,0 +1,20 @@
+2025-09-22 14:20:24,241 [INFO] === Starting ML Pipeline ===
+2025-09-22 14:20:24,245 [INFO] Columns to skip from config: ['DivAirportLandings', 'DepartureDelayGroups', 'AirTime', 'ArrivalDelayGroups', 'ArrDelay', 'ArrDelayMinutes', 'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__', 'DepDel15', 'ArrDel15']
+2025-09-22 14:20:24,246 [INFO] Filtered out 13 columns. Using 16 numeric features.
+2025-09-22 14:20:24,250 [INFO] Actually skipped numeric columns: ['DivAirportLandings', 'DepartureDelayGroups', 'AirTime', 'ArrivalDelayGroups', 'ArrDelay', 'ArrDelayMinutes', 'DepDelay', 'DepDelayMinutes', 'ActualElapsedTime', 'TaxiOut', 'TaxiIn', 'Diverted', '__index_level_0__']
+2025-09-22 14:20:24,251 [INFO] Using 16 numeric features after filtering skip_additional columns
+2025-09-22 14:20:24,254 [INFO] Columns→roles mapping (used): {'OriginAirportID': 'num', 'DestCityMarketID': 'num', 'DestStateFips': 'num', 'DOT_ID_Marketing_Airline': 'num', 'OriginAirportSeqID': 'num', 'Cancelled': 'tgt', 'OriginWac': 'num', 'DestAirportID': 'num', 'CRSElapsedTime': 'num', 'DOT_ID_Operating_Airline': 'num', 'Distance': 'num', 'DayofMonth': 'num', 'OriginCityMarketID': 'num', 'DestAirportSeqID': 'num', 'OriginStateFips': 'num', 'Flight_Number_Operating_Airline': 'num', 'Flight_Number_Marketing_Airline': 'num'}
+2025-09-22 14:20:24,316 [INFO] Loading data from BigQuery...
+2025-09-22 14:20:28,173 [INFO] Loaded data shape: (10000, 17)
+2025-09-22 14:20:28,188 [INFO] Train set: (8000, 16), Test set: (2000, 16)
+2025-09-22 14:20:28,188 [INFO] Starting Optuna optimization...
+2025-09-22 14:20:29,187 [INFO] Best parameters: {'num_leaves': 53, 'learning_rate': 0.07940467783083197, 'max_depth': 4}
+2025-09-22 14:20:29,187 [INFO] Best F2 score: 0.2505
+2025-09-22 14:20:29,875 [INFO] Saved columns→roles mapping locally: /home/sevas1saves/flight/mycoding/columns_roles.json
+2025-09-22 14:20:33,659 [INFO] Model logged to MLflow with F2 score: 0.0000
+2025-09-22 14:20:33,660 [INFO] Model URI: gs://mlflow_flight_cancellation3/artifacts/1/45bf360f928446f4b1ec733247021747/artifacts/lightgbm_model
+2025-09-22 14:20:33,660 [INFO] Feature importances URI: gs://mlflow_flight_cancellation3/artifacts/1/45bf360f928446f4b1ec733247021747/artifacts/feature_importances.csv
+2025-09-22 14:20:33,660 [INFO] Roles mapping URI: gs://mlflow_flight_cancellation3/artifacts/1/45bf360f928446f4b1ec733247021747/artifacts/columns_roles.json
+2025-09-22 14:20:33,660 [INFO] Top 5 features: ['CRSElapsedTime', 'DayofMonth', 'Flight_Number_Operating_Airline', 'Distance', 'OriginCityMarketID']
+2025-09-22 14:20:34,049 [INFO] Metrics logged to BigQuery successfully
+2025-09-22 14:20:34,049 [INFO] === Pipeline completed successfully ===

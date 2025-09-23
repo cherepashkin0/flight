@@ -2,7 +2,7 @@ import pandas as pd
 import json
 
 CSV_PATH = "../mycoding/results/flights_all_analysis_with_roles.csv"
-ROLE_PATH = "../mycoding/training_taken_roles.json"
+ROLE_PATH = "../mycoding/columns_roles.json"
 MODEL_NAME = "FlightFeatures"
 OUTPUT_FILE = "pydantic_module.py"
 

@@ -12,7 +12,7 @@ variables:
   VERSION_API: 0.12
   REGISTRY_IMAGE_UI: us-central1-docker.pkg.dev/flight-cancellation-prediction/flight/my_gradio
   VERSION_UI: 0.12
-  ZONE: europe-west3-a 
+  ZONE: europe-west4-a 
   CLUSTER_NAME: flight-k8s
   PROJECT_NAME: flight
   NAMESPACE: prod

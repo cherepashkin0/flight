@@ -12,10 +12,10 @@ from google.cloud import bigquery
 
 app = FastAPI()
 
-BQ_PROJECT = "flight-cancellation-prediction"
+BQ_PROJECT = "flight-cancellation-pred"
 BQ_DATASET = "mlflow_tracking"
 BQ_TABLE = "mlflow_metrics_log"
-TARGET_PROJECT_NAME = os.getenv("TARGET_PROJECT_NAME", "flight_cancellation_project")
+TARGET_PROJECT_NAME = os.getenv("TARGET_PROJECT_NAME", "flight_cancellation_pred")
 
 
 def get_best_model_uri():
