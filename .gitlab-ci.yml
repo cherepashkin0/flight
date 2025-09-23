@@ -25,7 +25,7 @@ test:
   script:
     - cp $GCP_SERVICE_ACCOUNT_KEY3 /tmp/keyfile.json
     - gcloud auth activate-service-account --key-file=/tmp/keyfile.json
-    - echo "CI_PROJECT_ID variable value: $CI_PROJECT_ID"
+    - echo "CI_PROJECT_ID variable value $CI_PROJECT_ID"
     - gcloud config set project $CI_PROJECT_ID
     - >
       gcloud builds submit
