@@ -9,7 +9,7 @@ steps:
 
   # build and push UI
   - name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}", "my_gradio"]
+    args: ["build", "-t", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}", "my_streamlit"]
 
   - name: "gcr.io/cloud-builders/docker"
     args: ["push", "${_REGISTRY_IMAGE_UI}:${_VERSION_UI}"]
