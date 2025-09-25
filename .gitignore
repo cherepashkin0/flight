@@ -21,4 +21,5 @@ my_app/drafts/
 mlruns/
 mycoding/preprocess_time_cols.sql
 logs/
+setup_cloud_run/
 
