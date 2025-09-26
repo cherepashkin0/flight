@@ -8,7 +8,7 @@ project:
 bq_logging:
   target_table: mlflow_metrics_log
   dataset: mlflow_tracking
-  gcs_bucket: mlflow_flight_cancellation
+  # gcs_bucket: mlflow_flight_cancellation
 
 output_path:
   results/

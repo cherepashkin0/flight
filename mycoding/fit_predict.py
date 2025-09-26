@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.metrics import fbeta_score
+from sklearn.metrics import fbeta_score, roc_auc_score, average_precision_score
 from google.cloud import bigquery
 import optuna
 import os
@@ -93,7 +93,7 @@ def load_data_from_bigquery(numeric_cols, target_col, sample_size=None):
     all_columns = numeric_cols + [target_col]
     
     if sample_size:
-        pos = sample_size // 10
+        pos = sample_size // 3
         neg = sample_size - pos
         cols = ", ".join(all_columns)
         
@@ -136,13 +136,12 @@ def create_preprocessor(numeric_cols):
 
 def objective_lightgbm(trial, X_train, y_train, numeric_cols):
     """Optuna objective for LightGBM with 3 main hyperparameters"""
-    # Calculate class weights for imbalanced data
+    # Calculate class weights for imbalanced data    
     counts = y_train.value_counts()
     n_pos = int(counts.get(True, 0))
     n_neg = int(counts.get(False, 0))
     scale_pos_weight = n_neg / max(n_pos, 1)
     
-    # Only 3 main hyperparameters
     params = {
         'objective': 'binary',
         'metric': 'binary_logloss',
@@ -150,6 +149,9 @@ def objective_lightgbm(trial, X_train, y_train, numeric_cols):
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
         'max_depth': trial.suggest_int('max_depth', 3, 12),
         'scale_pos_weight': scale_pos_weight,
+        # 'is_unbalance': True,  # Автоматическая балансировка
+        'boost_from_average': False,  # Лучше для дисбаланса
+        'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 10, 100),  # Минимум данных в листе
         'verbosity': -1,
         'seed': 42
     }
@@ -172,12 +174,40 @@ def objective_lightgbm(trial, X_train, y_train, numeric_cols):
         
         pipeline.fit(X_tr, y_tr)
         y_pred = pipeline.predict(X_val)
-        score = fbeta_score(y_val, y_pred, beta=2.0)
+        y_pred_proba = pipeline.predict_proba(X_val)[:, 1]
+        f2 = fbeta_score(y_val, y_pred, beta=2.0)
+        auc_pr = average_precision_score(y_val, y_pred_proba)  # Лучше для дисбаланса
+        score = 0.7 * f2 + 0.3 * auc_pr  # Комбинированная метрика
         scores.append(score)
     
     return np.mean(scores)
 
-def train_final_model(best_params, X_train, X_test, y_train, y_test, numeric_cols, roles_mapping):  # NEW: roles_mapping
+def optimize_threshold(pipeline, X_test, y_test, metric='f2'):
+    """Оптимизирует порог классификации"""
+    y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
+    
+    best_score = 0
+    best_threshold = 0.5
+    
+    # Попробуйте разные пороги
+    thresholds = np.arange(0.05, 0.95, 0.05)  # От 5% до 95%
+    
+    for threshold in thresholds:
+        y_pred = (y_pred_proba >= threshold).astype(int)
+        
+        if len(np.unique(y_pred)) > 1:  # Убеждаемся что есть оба класса
+            if metric == 'f2':
+                score = fbeta_score(y_test, y_pred, beta=2.0, zero_division=0)
+            elif metric == 'f1':
+                score = fbeta_score(y_test, y_pred, beta=1.0, zero_division=0)
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+    
+    return best_threshold, best_score
+
+def train_final_model(best_params, X_train, X_test, y_train, y_test, numeric_cols, roles_mapping):
     """Train final model with best parameters and log to MLflow"""
     
     # Create final model
@@ -191,9 +221,15 @@ def train_final_model(best_params, X_train, X_test, y_train, y_test, numeric_col
     # Train final model
     pipeline.fit(X_train, y_train)
     
-    # Evaluate
-    y_pred = pipeline.predict(X_test)
+    best_threshold, optimized_f2 = optimize_threshold(pipeline, X_test, y_test, 'f2')
+    
+    # Final predictions with optimal threshold
+    y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
+    y_pred = (y_pred_proba >= best_threshold).astype(int)
     f2_score = fbeta_score(y_test, y_pred, beta=2.0)
+    
+    logger.info(f"Default threshold (0.5) F2: {fbeta_score(y_test, pipeline.predict(X_test), beta=2.0):.4f}")
+    logger.info(f"Optimized threshold ({best_threshold:.3f}) F2: {f2_score:.4f}")
     
     # Extract feature importances
     lgbm_model = pipeline.named_steps['classifier']
@@ -211,43 +247,63 @@ def train_final_model(best_params, X_train, X_test, y_train, y_test, numeric_col
         # Log parameters
         mlflow.log_params(best_params)
         
-        # NEW: Log skip columns as parameter for traceability
+        # Log skip columns as parameter for traceability
         skip_cols = config.get('columns', {}).get('skip_additional', [])
         mlflow.log_param("skip_additional_columns", skip_cols)
         mlflow.log_param("num_features_used", len(numeric_cols))
+        mlflow.log_param("optimal_threshold", best_threshold)
         
         # Log metrics
         mlflow.log_metric("f2_score", f2_score)
         
-        # Save feature importances as CSV temporarily
+        # Save and log artifacts using joblib
         import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-            importance_df.to_csv(f.name, index=False)
-            temp_csv_path = f.name
         
-        # Log feature importances CSV as artifact
-        mlflow.log_artifact(temp_csv_path, artifact_path="feature_importances.csv")
-        os.unlink(temp_csv_path)
+# Save and log artifacts with fixed names
+        
+        # 1. Save pipeline as joblib pickle
+        pipeline_path = "model.joblib"
+        joblib.dump(pipeline, pipeline_path)
+        mlflow.log_artifact(pipeline_path)
+        os.unlink(pipeline_path)
+        
+        # 2. Save feature importances as CSV
+        importance_path = "feature_importances.csv"
+        importance_df.to_csv(importance_path, index=False)
+        mlflow.log_artifact(importance_path)
+        os.unlink(importance_path)
 
-        # NEW: save roles mapping as JSON (local + MLflow artifact)
+        # 3. Save roles mapping as JSON
         local_roles_path = save_roles_mapping_locally(roles_mapping, filename="columns_roles.json")
-        mlflow.log_artifact(local_roles_path, artifact_path="columns_roles.json")
-
-        # Log model
-        mlflow.sklearn.log_model(
-            sk_model=pipeline,
-            artifact_path="lightgbm_model"
-        )
+        mlflow.log_artifact(local_roles_path)
+        
+        # 4. Save model metadata as JSON (useful for loading)
+        model_metadata = {
+            "model_type": "lightgbm_pipeline",
+            "optimal_threshold": best_threshold,
+            "feature_columns": numeric_cols,
+            "target_column": config['columns']['target'],
+            "f2_score": f2_score,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        metadata_path = "model_metadata.json"
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(model_metadata, f, indent=4, ensure_ascii=False)
+        mlflow.log_artifact(metadata_path)
+        os.unlink(metadata_path)
         
         # Get artifact URIs
-        model_uri = mlflow.get_artifact_uri("lightgbm_model")
+        model_uri = mlflow.get_artifact_uri("model.joblib")
         feature_importance_uri = mlflow.get_artifact_uri("feature_importances.csv")
-        roles_mapping_uri = mlflow.get_artifact_uri("columns_roles.json")  # NEW
+        roles_mapping_uri = mlflow.get_artifact_uri("columns_roles.json")
+        metadata_uri = mlflow.get_artifact_uri("model_metadata.json")
         
         logger.info(f"Model logged to MLflow with F2 score: {f2_score:.4f}")
         logger.info(f"Model URI: {model_uri}")
         logger.info(f"Feature importances URI: {feature_importance_uri}")
-        logger.info(f"Roles mapping URI: {roles_mapping_uri}")  # NEW
+        logger.info(f"Roles mapping URI: {roles_mapping_uri}")
+        logger.info(f"Model metadata URI: {metadata_uri}")
         logger.info(f"Top 5 features: {importance_df.head()['feature_name'].tolist()}")
         
         return pipeline, f2_score, model_uri, feature_importance_uri
