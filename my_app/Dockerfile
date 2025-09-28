@@ -12,3 +12,4 @@ COPY app.py .
 COPY pydantic_module.py .
 
 CMD ["uvicorn", "app:app", "--port", "8001", "--host", "0.0.0.0"]
+# CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8001}"]

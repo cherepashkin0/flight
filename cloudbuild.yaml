@@ -52,7 +52,7 @@ steps:
         "--region", "europe-west4",
         "--platform", "managed",
         "--allow-unauthenticated",
-        "--port", "8005"
+        "--port", "8501"
       ]
 
 options:
