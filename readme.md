@@ -1,6 +1,7 @@
 # Flight Cancellation Prediction Project
 
 This project aims to predict flight cancellations using machine learning models (LightGBM) and provides scripts to preprocess data, analyze it, train models, finetune hyperparameters using optuna, and deploy a prediction API and UI (streamlit and gradio). Deployment is supported on Google Kubernetes Engine (GKE) and via Google Cloud Build, triggered from GitLab CI (containers pushed to Artifact Registry).
+.
 
 ## Project Structure
 
