@@ -52,7 +52,8 @@ steps:
         "--region", "europe-west4",
         "--platform", "managed",
         "--allow-unauthenticated",
-        "--port", "8501"
+        "--port", "8501",
+        "--set-env-vars", "API_URL=${_API_URL}"
       ]
 
 options:
