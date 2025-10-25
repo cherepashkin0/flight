@@ -1,0 +1,2 @@
+OriginAirportID,DestCityMarketID,DestStateFips,DOT_ID_Marketing_Airline,OriginAirportSeqID,Cancelled,OriginWac,DestAirportID,CRSElapsedTime,DOT_ID_Operating_Airline,Distance,DayofMonth,OriginCityMarketID,DestAirportSeqID,OriginStateFips,Flight_Number_Operating_Airline,Flight_Number_Marketing_Airline
+12892,30559,53,19977,1289208,False,91,14747,165.0,20304,954.0,27,32575,1474703,6,5658,5658

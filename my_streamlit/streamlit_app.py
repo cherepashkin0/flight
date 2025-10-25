@@ -9,7 +9,19 @@ import os
 
 # Title of the app
 st.title("Flight Cancellation Predictor")
+st.subheader("Download Sample File")
+st.write("Download a sample CSV file to see the expected format:")
 
+with open('sample_false.csv', 'r') as f:
+    csv_file = f.read()
+
+st.download_button(
+    label="Download Sample CSV",
+    data=csv_file,
+    file_name="sample_false.csv",
+    mime="text/csv",
+    help="Download this sample file to see the expected CSV format"
+)
 # Upload CSV file
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
